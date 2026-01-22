@@ -1,4 +1,4 @@
-# 6-String Optimizer 🎸
+# 6-String Optimizer
 
 ---
 
