@@ -1,0 +1,4 @@
+torch>=2.0
+geoopt>=0.5.0
+PyYAML
+matplotlib  # if you plan to plot

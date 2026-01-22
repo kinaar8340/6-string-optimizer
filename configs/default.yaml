@@ -1,0 +1,10 @@
+optimizer:
+  lr: 0.05
+  burst_threshold: 7.0
+  verbose: true
+model:
+  num_instances: 32
+training:
+  steps: 8000
+  warmup_steps: 1200
+device: "cuda"  # or "cpu"
