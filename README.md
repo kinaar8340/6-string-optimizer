@@ -143,16 +143,17 @@ Contributions of comparisons welcome!
 
 Riemannian optimization on the **Stiefel manifold** for damped, coupled, inharmonic string vibration models — with a new **real-audio pipeline** (Phase 1).
 
-**Phase 1 (current):** Load recorded audio → partial tracking (f0 + inharmonic overtones) → estimate damping / inharmonicity B → starter fitting scaffold.
+**Phase 1–2 (current):** Full pipeline — piptrack partial tracking with continuity linking → physical parameter estimation → Stiefel model initialization → Riemannian optimization (geometric + physics priors + multi-res STFT loss) → modal synthesis + spectrogram comparison.
 
 ```bash
 cd physics_audio
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python run_real_audio.py --audio path/to/guitar_note.wav --duration 3.0
+python run_real_audio.py --audio note.wav --max_steps 5000 --stft_weight 0.5
 ```
 
-**Next iterations:** model initialization + optimization loop, modal synthesis, STFT loss, punctuated-equilibrium trainer integration.
+**Phase 3 (next):** Full punctuated-equilibrium jumps on real audio, richer modal basis, batch note processing.
 
 See `physics_audio/README.md` for full details on the Stiefel manifold inverse problem and visualization suite.
 

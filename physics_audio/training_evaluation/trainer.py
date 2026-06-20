@@ -30,6 +30,7 @@ from .config import *
 from .model import StiefelDampedCoupledInharmGR
 from .utils import stiefel_dist, safe_proj, align_and_compute_freq, get_pca_initial_basis, manifold
 from .losses import total_loss
+from .audio_utils import modal_synthesis_torch
 from .viz import save_trajectory_frame, save_detailed_pyramid_plot, plot_smith_chart
 
 # Force spawn for CUDA safety
@@ -64,7 +65,7 @@ def add_euclidean_noise(model: nn.Module, std: float):
 
 def _rollout_worker(arg):
     (idx, pre_state_dict_cpu, noise_std, data_points_cpu, times_cpu,
-     initial_basis_cpu, worker_seed, lr_geo, lr_slow) = arg
+     initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu) = arg
 
     torch.manual_seed(worker_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,7 +103,10 @@ def _rollout_worker(arg):
 
         with autocast('cuda', enabled=USE_AMP):
             preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
-            loss = total_loss(preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars)
+            loss = total_loss(
+                preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+                prior_targets=prior_targets_cpu,
+            )
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
@@ -129,7 +133,10 @@ def _rollout_worker(arg):
 
     with torch.no_grad():
         preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
-        final_loss = total_loss(preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars).item()
+        final_loss = total_loss(
+            preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+            prior_targets=prior_targets_cpu,
+        ).item()
 
     # Return CPU state_dict for safe pickling
     best_state_cpu = {k: v.cpu().clone().detach() if torch.is_tensor(v) else v for k, v in model.state_dict().items()}
@@ -143,41 +150,66 @@ def _rollout_worker(arg):
     }
 
 
-def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: bool | None = FORCE_PUNCTUATED):
+def run_single_seed(
+    seed: int,
+    noise_amp: float = NOISE_AMP,
+    force_punctuated: bool | None = FORCE_PUNCTUATED,
+    *,
+    real_audio_data: torch.Tensor | None = None,
+    real_audio_times: torch.Tensor | None = None,
+    real_audio_initial_basis: torch.Tensor | None = None,
+    target_waveform: torch.Tensor | None = None,
+    audio_sr: int = REAL_AUDIO_SR,
+    audio_duration: float | None = None,
+    prior_targets: dict | None = None,
+    max_steps: int | None = None,
+    stft_weight: float = 0.0,
+    preinitialized_model: StiefelDampedCoupledInharmGR | None = None,
+):
     start_time = time.time()
+    training_steps = max_steps if max_steps is not None else MAX_STEPS
+    use_real_audio = real_audio_data is not None
 
     torch.manual_seed(DATA_SEED + seed)
     np.random.seed(DATA_SEED + seed)
     random.seed(DATA_SEED + seed)
 
-    # === True physics generation ===
-    raw = torch.randn(DIM, K_MODES, device=device)
-    true_base = safe_proj(raw)
+    if use_real_audio:
+        data_points = real_audio_data.to(device)
+        times = real_audio_times.to(device) if real_audio_times is not None else TIMES
+        initial_basis = real_audio_initial_basis if real_audio_initial_basis is not None else get_pca_initial_basis(data_points, K_MODES)
+        exact_points = data_points
+        true_base = None
+        true_vel_dir = None
+        true_freq = None
+    else:
+        # === True physics generation ===
+        raw = torch.randn(DIM, K_MODES, device=device)
+        true_base = safe_proj(raw)
 
-    true_vel_dir_raw = torch.randn(DIM, K_MODES, device=device)
-    true_vel_dir = manifold.proju(true_base, true_vel_dir_raw)
-    true_vel_dir = true_vel_dir / (true_vel_dir.norm(dim=0, keepdim=True) + 1e-8)
+        true_vel_dir_raw = torch.randn(DIM, K_MODES, device=device)
+        true_vel_dir = manifold.proju(true_base, true_vel_dir_raw)
+        true_vel_dir = true_vel_dir / (true_vel_dir.norm(dim=0, keepdim=True) + 1e-8)
 
-    true_freq = IDEAL_HARMONICS * torch.sqrt(1 + TRUE_INHARM_B * IDEAL_HARMONICS.pow(2))
-    true_vel = true_vel_dir * VELOCITY_SCALE_BASE * true_freq
+        true_freq = IDEAL_HARMONICS * torch.sqrt(1 + TRUE_INHARM_B * IDEAL_HARMONICS.pow(2))
+        true_vel = true_vel_dir * VELOCITY_SCALE_BASE * true_freq
 
-    true_coupling_raw = torch.randn(K_MODES, K_MODES, device=device) * 0.05
-    true_coupling_skew = true_coupling_raw.tril(diagonal=-1) - true_coupling_raw.triu(diagonal=1)
-    true_coupling_vel = manifold.proju(true_base, true_base @ true_coupling_skew)
+        true_coupling_raw = torch.randn(K_MODES, K_MODES, device=device) * 0.05
+        true_coupling_skew = true_coupling_raw.tril(diagonal=-1) - true_coupling_raw.triu(diagonal=1)
+        true_coupling_vel = manifold.proju(true_base, true_base @ true_coupling_skew)
 
-    true_vel_total = true_vel + TRUE_COUPLING_STRENGTH * true_coupling_vel
+        true_vel_total = true_vel + TRUE_COUPLING_STRENGTH * true_coupling_vel
 
-    abs_times = torch.abs(TIMES).view(-1, 1, 1)
-    envelope = torch.exp(-TRUE_DAMPING_RATES * abs_times)
+        abs_times = torch.abs(TIMES).view(-1, 1, 1)
+        envelope = torch.exp(-TRUE_DAMPING_RATES * abs_times)
 
-    base_batch = true_base.unsqueeze(0).expand(N_POINTS, -1, -1)
-    vel_batch = TIMES.view(-1, 1, 1) * true_vel_total.unsqueeze(0) * envelope
-    exact_points = manifold.expmap(base_batch, vel_batch)
+        base_batch = true_base.unsqueeze(0).expand(N_POINTS, -1, -1)
+        vel_batch = TIMES.view(-1, 1, 1) * true_vel_total.unsqueeze(0) * envelope
+        exact_points = manifold.expmap(base_batch, vel_batch)
 
-    data_points = exact_points + noise_amp * torch.randn_like(exact_points)
-
-    # === PCA initialization ===
-    initial_basis = get_pca_initial_basis(data_points, K_MODES)
+        data_points = exact_points + noise_amp * torch.randn_like(exact_points)
+        times = TIMES
+        initial_basis = get_pca_initial_basis(data_points, K_MODES)
 
     # === Visualization setup ===
     _, _, proj_matrix = torch.pca_lowrank(data_points.reshape(-1, DIM), q=3, center=True, niter=6)
@@ -188,7 +220,10 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
     time_norm = ((TIMES - TIMES.min()) / (TIMES.max() - TIMES.min() + 1e-8)).cpu().numpy()
 
     # === Model & optimizer ===
-    model = StiefelDampedCoupledInharmGR(DIM, K_MODES, initial_basis).to(device)
+    if preinitialized_model is not None:
+        model = preinitialized_model.to(device)
+    else:
+        model = StiefelDampedCoupledInharmGR(DIM, K_MODES, initial_basis).to(device)
 
     def get_curriculum_lrs(step):
         if step < STAGE1_STEPS:
@@ -223,15 +258,16 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
     )
 
     with main_progress:
+        task_label = f"Real-audio seed {seed}" if use_real_audio else f"Seed {seed}  noise={noise_amp:.3f}"
         main_task = main_progress.add_task(
-            f"Seed {seed}  noise={noise_amp:.3f}",
-            total=MAX_STEPS,
+            task_label,
+            total=training_steps,
             loss="--.------",
             jumps=0,
             best="--.------",
         )
 
-        while global_step < MAX_STEPS:
+        while global_step < training_steps:
             lr_geo, lr_slow = get_curriculum_lrs(global_step)
             optimizer.param_groups[0]['lr'] = lr_geo
             optimizer.param_groups[1]['lr'] = lr_slow
@@ -239,8 +275,19 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
             optimizer.zero_grad(set_to_none=True)
 
             with autocast('cuda', enabled=USE_AMP):
-                preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(TIMES)
-                loss = total_loss(preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars)
+                preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
+                synth_waveform = None
+                if stft_weight > 0.0 and target_waveform is not None and audio_duration is not None:
+                    synth_waveform = modal_synthesis_torch(
+                        full_freq, damping_rates, audio_duration, audio_sr,
+                    )
+                loss = total_loss(
+                    preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+                    prior_targets=prior_targets,
+                    synth_waveform=synth_waveform,
+                    target_waveform=target_waveform,
+                    stft_weight=stft_weight,
+                )
 
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -282,8 +329,9 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
                 pre_state_dict_cpu = {k: v.cpu().clone().detach() if torch.is_tensor(v) else v
                                       for k, v in model.state_dict().items()}
                 data_points_cpu = data_points.cpu()
-                times_cpu = TIMES.cpu()
+                times_cpu = times.cpu()
                 initial_basis_cpu = initial_basis.cpu()
+                prior_targets_cpu = prior_targets
 
                 current_jump_std = JUMP_STD_MIN + (JUMP_STD_MAX - JUMP_STD_MIN) * (jumps_performed / max(1, MAX_JUMPS - 1))
 
@@ -292,7 +340,7 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
                     std = 0.0 if INCLUDE_ZERO_JUMP and i == 0 else random.uniform(JUMP_STD_MIN, current_jump_std)
                     worker_seed = random.randint(0, 2**32 - 1)
                     arg = (i, pre_state_dict_cpu, std, data_points_cpu, times_cpu,
-                           initial_basis_cpu, worker_seed, lr_geo, lr_slow)
+                           initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu)
                     args.append(arg)
 
                 candidates = []
@@ -377,8 +425,11 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
 
                 # Robust post-jump visualization
                 with torch.no_grad():
-                    preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(TIMES)
-                    current_loss = total_loss(preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars).item()
+                    preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
+                    current_loss = total_loss(
+                        preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+                        prior_targets=prior_targets,
+                    ).item()
 
                 save_trajectory_frame(global_step, preds.detach(), current_loss, seed,
                                       project_to_3d, time_norm, true_proj, data_proj, is_jump=(selected_candidate is not None))
@@ -398,42 +449,57 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
 
     # === Final evaluation ===
     with torch.no_grad():
-        preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(TIMES)
+        preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
 
     learned_vel_dir = manifold.proju(model.base, model.vel_dir_raw)
     learned_vel_dir = learned_vel_dir / (learned_vel_dir.norm(dim=0, keepdim=True) + 1e-8)
 
-    aligned_rates, aligned_speed_scalars, aligned_learned_freq, aligned_inharm_b = align_and_compute_freq(
-        true_vel_dir, learned_vel_dir, damping_rates, speed_scalars, inharm_b, full_freq
-    )
-
-    true_geo_dist = stiefel_dist(model.base, true_base).item()
     coupling_val = coupling_strength.item()
-    coupling_err = abs(coupling_val - TRUE_COUPLING_STRENGTH)
-    damping_rmse = torch.sqrt(F.mse_loss(aligned_rates, TRUE_DAMPING_RATES)).item()
-    damping_corr = np.corrcoef(aligned_rates.cpu().numpy(), TRUE_DAMPING_RATES.cpu().numpy())[0, 1]
-    speed_rel_std = (aligned_speed_scalars.std(unbiased=False) / aligned_speed_scalars.mean()).item()
-    freq_rmse = torch.sqrt(F.mse_loss(aligned_learned_freq, VELOCITY_SCALE_BASE * true_freq)).item()
-    freq_corr = np.corrcoef(aligned_learned_freq.cpu().numpy(),
-                            (VELOCITY_SCALE_BASE * true_freq).cpu().numpy())[0, 1]
-    max_inharm_b = aligned_inharm_b.max().item()
-
+    speed_rel_std = (speed_scalars.std(unbiased=False) / (speed_scalars.mean() + 1e-8)).item()
+    max_inharm_b = inharm_b.max().item()
     per_mode_mse = (preds - exact_points).pow(2).mean(dim=[0, 1])
     true_var_per_mode = exact_points.var(dim=0).mean(dim=0).cpu().numpy()
     relative_mse_pred = (per_mode_mse / (per_mode_mse.detach().new_tensor(true_var_per_mode) + 1e-8)).cpu().numpy()
     total_recon_mse_pred = per_mode_mse.mean().item()
-    true_full_freq_np = (VELOCITY_SCALE_BASE * true_freq).cpu().numpy()
 
-    strict_success = (true_geo_dist < STRICT_GEO_DIST and
-                      max_inharm_b < STRICT_MAX_INHARM and
-                      speed_rel_std < STRICT_SPEED_STD and
-                      coupling_err < STRICT_COUPLING_ERR and
-                      damping_rmse < STRICT_DAMPING_RMSE and
-                      damping_corr > STRICT_DAMPING_CORR and
-                      freq_corr > STRICT_FREQ_CORR and
-                      freq_rmse < STRICT_FREQ_RMSE)
-
-    loose_success = strict_success or (max_inharm_b < LOOSE_MAX_INHARM and speed_rel_std < LOOSE_SPEED_STD)
+    if use_real_audio:
+        target_damping = prior_targets['damping_rates'] if prior_targets else TRUE_DAMPING_RATES
+        target_coupling = prior_targets.get('coupling_strength', TRUE_COUPLING_STRENGTH) if prior_targets else TRUE_COUPLING_STRENGTH
+        true_geo_dist = 0.0
+        coupling_err = abs(coupling_val - target_coupling)
+        damping_rmse = torch.sqrt(F.mse_loss(damping_rates, target_damping)).item()
+        damping_corr = float(np.corrcoef(damping_rates.cpu().numpy(), target_damping.cpu().numpy())[0, 1])
+        freq_rmse = 0.0
+        freq_corr = 1.0
+        aligned_rates = damping_rates
+        aligned_speed_scalars = speed_scalars
+        aligned_learned_freq = full_freq
+        aligned_inharm_b = inharm_b
+        true_full_freq_np = full_freq.cpu().numpy()
+        strict_success = damping_rmse < STRICT_DAMPING_RMSE and total_recon_mse_pred < 0.5
+        loose_success = strict_success or total_recon_mse_pred < 1.0
+    else:
+        aligned_rates, aligned_speed_scalars, aligned_learned_freq, aligned_inharm_b = align_and_compute_freq(
+            true_vel_dir, learned_vel_dir, damping_rates, speed_scalars, inharm_b, full_freq
+        )
+        true_geo_dist = stiefel_dist(model.base, true_base).item()
+        coupling_err = abs(coupling_val - TRUE_COUPLING_STRENGTH)
+        damping_rmse = torch.sqrt(F.mse_loss(aligned_rates, TRUE_DAMPING_RATES)).item()
+        damping_corr = np.corrcoef(aligned_rates.cpu().numpy(), TRUE_DAMPING_RATES.cpu().numpy())[0, 1]
+        freq_rmse = torch.sqrt(F.mse_loss(aligned_learned_freq, VELOCITY_SCALE_BASE * true_freq)).item()
+        freq_corr = np.corrcoef(aligned_learned_freq.cpu().numpy(),
+                                (VELOCITY_SCALE_BASE * true_freq).cpu().numpy())[0, 1]
+        max_inharm_b = aligned_inharm_b.max().item()
+        true_full_freq_np = (VELOCITY_SCALE_BASE * true_freq).cpu().numpy()
+        strict_success = (true_geo_dist < STRICT_GEO_DIST and
+                          max_inharm_b < STRICT_MAX_INHARM and
+                          speed_rel_std < STRICT_SPEED_STD and
+                          coupling_err < STRICT_COUPLING_ERR and
+                          damping_rmse < STRICT_DAMPING_RMSE and
+                          damping_corr > STRICT_DAMPING_CORR and
+                          freq_corr > STRICT_FREQ_CORR and
+                          freq_rmse < STRICT_FREQ_RMSE)
+        loose_success = strict_success or (max_inharm_b < LOOSE_MAX_INHARM and speed_rel_std < LOOSE_SPEED_STD)
 
     save_detailed_pyramid_plot(
         seed=seed,
@@ -460,7 +526,7 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
         loose_success=loose_success,
     )
 
-    return {
+    result = {
         'seed': seed,
         'jumps': jumps_performed,
         'final_geo_dist': true_geo_dist,
@@ -475,4 +541,10 @@ def run_single_seed(seed: int, noise_amp: float = NOISE_AMP, force_punctuated: b
         'loose_success': loose_success,
         'wall_time': wall_time,
         'total_recon_mse_pred': total_recon_mse_pred,
+        'model': model,
+        'full_freq': full_freq.detach(),
+        'damping_rates': damping_rates.detach(),
+        'coupling_strength': coupling_val,
+        'inharm_b': inharm_b.detach(),
     }
+    return result

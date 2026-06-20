@@ -105,4 +105,9 @@ TANGENT_PROJECT_AFTER_NOISE = True  # Project vel_dir_raw (and optionally coupli
 RECIPROCAL_STRENGTH = 0.5           # Strength for reciprocal noise (gentler flips)
 SWR_BEST_LOSS_EST = 0.12           # 0.15 Optimistic "characteristic impedance" (tune downward from best observed loose losses), was 0.03
 
-  # 0.15 Optimistic "characteristic imped
+# === Real-audio extension ===
+REAL_AUDIO_MAX_STEPS = 20000
+REAL_AUDIO_STFT_WEIGHT = 0.5
+REAL_AUDIO_STFT_FFT_SIZES = [512, 1024, 2048]
+REAL_AUDIO_STFT_HOP_RATIO = 0.25
+REAL_AUDIO_SR = 44100
