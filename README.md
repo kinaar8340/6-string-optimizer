@@ -139,6 +139,25 @@ Contributions of comparisons welcome!
 
 ---
 
+## Physics Audio Extension (`physics_audio/`)
+
+Riemannian optimization on the **Stiefel manifold** for damped, coupled, inharmonic string vibration models — with a new **real-audio pipeline** (Phase 1).
+
+**Phase 1 (current):** Load recorded audio → partial tracking (f0 + inharmonic overtones) → estimate damping / inharmonicity B → starter fitting scaffold.
+
+```bash
+cd physics_audio
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python run_real_audio.py --audio path/to/guitar_note.wav --duration 3.0
+```
+
+**Next iterations:** model initialization + optimization loop, modal synthesis, STFT loss, punctuated-equilibrium trainer integration.
+
+See `physics_audio/README.md` for full details on the Stiefel manifold inverse problem and visualization suite.
+
+---
+
 ## License
 
 MIT License — feel free to use, modify, and share. Attribution appreciated.

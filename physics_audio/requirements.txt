@@ -1,0 +1,18 @@
+# ~/mlpa/requirements.txt
+#
+
+geoopt>=0.5.0          # Stiefel manifold, RiemannianAdam
+scipy>=1.11.0          # linear_sum_assignment, optimize
+matplotlib>=3.8.0      # Visualization (pyramid plots, Smith chart, trajectory frames)
+numpy>=1.26.0          # Core numerics (implicitly required by Torch/scipy)
+botorch>=0.11.0        # Bayesian optimization tuner (pulls gpytorch, ax-platform, etc.)
+gpytorch>=1.12         # Explicit for tuner compatibility (usually pulled by botorch)
+rich>=13.0             # Progress bars in trainer.py
+
+# Real-audio extensions (run_real_audio.py)
+librosa>=0.10.0       # STFT, partial tracking, audio I/O
+soundfile>=0.12.0     # WAV reading
+# madmom>=0.16          # Onset/partial utilities (if needed)
+
+
+
