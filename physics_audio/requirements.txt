@@ -12,6 +12,8 @@ rich>=13.0             # Progress bars in trainer.py
 # Real-audio extensions (run_real_audio.py)
 librosa>=0.10.0       # STFT, partial tracking, audio I/O
 soundfile>=0.12.0     # WAV reading
+sounddevice>=0.4.6    # Live microphone input
+scikit-learn>=1.3.0   # Batch note clustering
 # madmom>=0.16          # Onset/partial utilities (if needed)
 
 

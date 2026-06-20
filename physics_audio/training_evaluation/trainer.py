@@ -166,6 +166,7 @@ def run_single_seed(
     max_steps: int | None = None,
     stft_weight: float = 0.0,
     preinitialized_model: StiefelDampedCoupledInharmGR | None = None,
+    jump_test: dict | None = None,
 ):
     start_time = time.time()
     training_steps = max_steps if max_steps is not None else MAX_STEPS
@@ -238,6 +239,29 @@ def run_single_seed(
         jump_std_max = JUMP_STD_MAX
         rollout_horizon = ROLLOUT_HORIZON
 
+    use_parallel_rollouts = USE_PARALLEL_ROLLOUTS
+
+    # Jump-test overrides (low patience, forced jumps, artificial plateau)
+    artificial_plateau_at = None
+    force_jump_every = None
+    if jump_test:
+        if jump_test.get('low_patience') is not None:
+            stagnation_patience = jump_test['low_patience']
+        if jump_test.get('min_step_for_jump') is not None:
+            min_step_for_jump = jump_test['min_step_for_jump']
+        if jump_test.get('max_jumps') is not None:
+            max_jumps = jump_test['max_jumps']
+        artificial_plateau_at = jump_test.get('artificial_plateau_at')
+        force_jump_every = jump_test.get('force_jump_every')
+        if jump_test.get('pop_size') is not None:
+            pop_size = jump_test['pop_size']
+        if jump_test.get('rollout_horizon') is not None:
+            rollout_horizon = jump_test['rollout_horizon']
+        use_parallel_rollouts = not jump_test.get('sequential_rollouts', True)
+        if jump_test.get('verbose'):
+            print(f"  [jump_test] patience={stagnation_patience} min_step={min_step_for_jump} "
+                  f"force_every={force_jump_every} plateau_at={artificial_plateau_at}")
+
     # === Model & optimizer ===
     if preinitialized_model is not None:
         model = preinitialized_model.to(device)
@@ -288,8 +312,14 @@ def run_single_seed(
 
         while global_step < training_steps:
             lr_geo, lr_slow = get_curriculum_lrs(global_step)
+            if artificial_plateau_at is not None and global_step >= artificial_plateau_at:
+                lr_geo, lr_slow = 1e-9, 1e-9
             optimizer.param_groups[0]['lr'] = lr_geo
             optimizer.param_groups[1]['lr'] = lr_slow
+
+            if force_jump_every and global_step >= min_step_for_jump and jumps_performed < max_jumps:
+                if global_step % force_jump_every == 0:
+                    stagnation_steps = stagnation_patience
 
             optimizer.zero_grad(set_to_none=True)
 
@@ -375,7 +405,7 @@ def run_single_seed(
                     TimeRemainingColumn(),
                 )
 
-                if USE_PARALLEL_ROLLOUTS:
+                if use_parallel_rollouts:
                     print(f"   Parallel rollouts with {min(PARALLEL_MAX_WORKERS, pop_size)} workers...")
                     try:
                         with ProcessPoolExecutor(max_workers=min(PARALLEL_MAX_WORKERS, pop_size)) as executor:

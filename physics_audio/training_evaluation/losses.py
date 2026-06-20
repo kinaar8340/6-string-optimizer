@@ -108,5 +108,9 @@ def total_loss(
         damping_rates, coupling_strength, inharm_b, speed_scalars, prior_targets=prior_targets,
     )
     if stft_weight > 0.0 and synth_waveform is not None and target_waveform is not None:
-        loss = loss + stft_weight * multi_resolution_stft_loss(synth_waveform, target_waveform)
+        if synth_waveform.is_cuda or target_waveform.is_cuda:
+            from .streaming_stft import multi_resolution_stft_loss_gpu
+            loss = loss + stft_weight * multi_resolution_stft_loss_gpu(synth_waveform, target_waveform)
+        else:
+            loss = loss + stft_weight * multi_resolution_stft_loss(synth_waveform, target_waveform)
     return loss
