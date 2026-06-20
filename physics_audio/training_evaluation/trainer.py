@@ -30,7 +30,7 @@ from .config import *
 from .model import StiefelDampedCoupledInharmGR
 from .utils import stiefel_dist, safe_proj, align_and_compute_freq, get_pca_initial_basis, manifold
 from .losses import total_loss
-from .audio_utils import modal_synthesis_torch
+from .audio_utils import modal_synthesis_torch, extract_coupling_skew
 from .viz import save_trajectory_frame, save_detailed_pyramid_plot, plot_smith_chart
 
 # Force spawn for CUDA safety
@@ -65,13 +65,14 @@ def add_euclidean_noise(model: nn.Module, std: float):
 
 def _rollout_worker(arg):
     (idx, pre_state_dict_cpu, noise_std, data_points_cpu, times_cpu,
-     initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu) = arg
+     initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
+     rollout_horizon) = arg
 
     torch.manual_seed(worker_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     from .model import StiefelDampedCoupledInharmGR
-    from .config import DIM, K_MODES, ROLLOUT_HORIZON, USE_AMP
+    from .config import DIM, K_MODES, USE_AMP
     from .losses import total_loss
     from torch.nn.utils import clip_grad_norm_
 
@@ -98,7 +99,7 @@ def _rollout_worker(arg):
     min_steps = 2000
     steps_performed = 0
 
-    for local_step in range(ROLLOUT_HORIZON):
+    for local_step in range(rollout_horizon):
         optimizer.zero_grad(set_to_none=True)
 
         with autocast('cuda', enabled=USE_AMP):
@@ -217,7 +218,25 @@ def run_single_seed(
     project_to_3d = lambda pts: (pts.reshape(-1, DIM).cpu() @ proj_matrix).reshape(pts.shape[0], -1, 3).numpy()
     true_proj = project_to_3d(exact_points)
     data_proj = project_to_3d(data_points)
-    time_norm = ((TIMES - TIMES.min()) / (TIMES.max() - TIMES.min() + 1e-8)).cpu().numpy()
+    time_norm = ((times - times.min()) / (times.max() - times.min() + 1e-8)).cpu().numpy()
+
+    # Real-audio uses shorter stagnation patience for punctuated jumps
+    if use_real_audio:
+        stagnation_patience = REAL_AUDIO_STAGNATION_PATIENCE
+        min_step_for_jump = REAL_AUDIO_MIN_STEP_FOR_JUMP
+        max_jumps = REAL_AUDIO_MAX_JUMPS
+        pop_size = REAL_AUDIO_POP_SIZE
+        jump_std_min = REAL_AUDIO_JUMP_STD_MIN
+        jump_std_max = REAL_AUDIO_JUMP_STD_MAX
+        rollout_horizon = REAL_AUDIO_ROLLOUT_HORIZON
+    else:
+        stagnation_patience = STAGNATION_PATIENCE
+        min_step_for_jump = MIN_STEP_FOR_JUMP_CHECK
+        max_jumps = MAX_JUMPS
+        pop_size = POP_SIZE
+        jump_std_min = JUMP_STD_MIN
+        jump_std_max = JUMP_STD_MAX
+        rollout_horizon = ROLLOUT_HORIZON
 
     # === Model & optimizer ===
     if preinitialized_model is not None:
@@ -278,8 +297,11 @@ def run_single_seed(
                 preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
                 synth_waveform = None
                 if stft_weight > 0.0 and target_waveform is not None and audio_duration is not None:
+                    coupling_skew = extract_coupling_skew(model)
                     synth_waveform = modal_synthesis_torch(
                         full_freq, damping_rates, audio_duration, audio_sr,
+                        coupling_strength=coupling_strength,
+                        coupling_skew=coupling_skew,
                     )
                 loss = total_loss(
                     preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
@@ -317,9 +339,9 @@ def run_single_seed(
                                       project_to_3d, time_norm, true_proj, data_proj, is_jump=False)
 
             # === Punctuated jump on stagnation ===
-            if (stagnation_steps >= STAGNATION_PATIENCE and
-                global_step >= MIN_STEP_FOR_JUMP_CHECK and
-                jumps_performed < MAX_JUMPS):
+            if (stagnation_steps >= stagnation_patience and
+                global_step >= min_step_for_jump and
+                jumps_performed < max_jumps):
 
                 print(f"\n>>> PUNCTUATED JUMP {jumps_performed + 1} at step {global_step} | loss {current_loss:.8f} <<<")
 
@@ -333,14 +355,15 @@ def run_single_seed(
                 initial_basis_cpu = initial_basis.cpu()
                 prior_targets_cpu = prior_targets
 
-                current_jump_std = JUMP_STD_MIN + (JUMP_STD_MAX - JUMP_STD_MIN) * (jumps_performed / max(1, MAX_JUMPS - 1))
+                current_jump_std = jump_std_min + (jump_std_max - jump_std_min) * (jumps_performed / max(1, max_jumps - 1))
 
                 args = []
-                for i in range(POP_SIZE):
-                    std = 0.0 if INCLUDE_ZERO_JUMP and i == 0 else random.uniform(JUMP_STD_MIN, current_jump_std)
+                for i in range(pop_size):
+                    std = 0.0 if INCLUDE_ZERO_JUMP and i == 0 else random.uniform(jump_std_min, current_jump_std)
                     worker_seed = random.randint(0, 2**32 - 1)
                     arg = (i, pre_state_dict_cpu, std, data_points_cpu, times_cpu,
-                           initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu)
+                           initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
+                           rollout_horizon)
                     args.append(arg)
 
                 candidates = []
@@ -353,12 +376,12 @@ def run_single_seed(
                 )
 
                 if USE_PARALLEL_ROLLOUTS:
-                    print(f"   Parallel rollouts with {min(PARALLEL_MAX_WORKERS, POP_SIZE)} workers...")
+                    print(f"   Parallel rollouts with {min(PARALLEL_MAX_WORKERS, pop_size)} workers...")
                     try:
-                        with ProcessPoolExecutor(max_workers=min(PARALLEL_MAX_WORKERS, POP_SIZE)) as executor:
+                        with ProcessPoolExecutor(max_workers=min(PARALLEL_MAX_WORKERS, pop_size)) as executor:
                             futures = [executor.submit(_rollout_worker, a) for a in args]
                             with rollout_progress:
-                                rollout_task = rollout_progress.add_task("Parallel rollouts", total=POP_SIZE)
+                                rollout_task = rollout_progress.add_task("Parallel rollouts", total=pop_size)
                                 for future in as_completed(futures):
                                     try:
                                         res = future.result()
@@ -370,7 +393,7 @@ def run_single_seed(
                     except Exception as e:
                         print(f"   Parallel failed ({e}), falling back to sequential")
                         with rollout_progress:
-                            rollout_task = rollout_progress.add_task("Sequential rollouts", total=POP_SIZE)
+                            rollout_task = rollout_progress.add_task("Sequential rollouts", total=pop_size)
                             for a in args:
                                 try:
                                     res = _rollout_worker(a)
@@ -382,7 +405,7 @@ def run_single_seed(
                 else:
                     print("   Sequential rollouts...")
                     with rollout_progress:
-                        rollout_task = rollout_progress.add_task("Sequential rollouts", total=POP_SIZE)
+                        rollout_task = rollout_progress.add_task("Sequential rollouts", total=pop_size)
                         for a in args:
                             try:
                                 res = _rollout_worker(a)
@@ -546,5 +569,6 @@ def run_single_seed(
         'damping_rates': damping_rates.detach(),
         'coupling_strength': coupling_val,
         'inharm_b': inharm_b.detach(),
+        'coupling_skew': extract_coupling_skew(model).detach(),
     }
     return result
