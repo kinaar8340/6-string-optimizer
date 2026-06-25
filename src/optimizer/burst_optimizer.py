@@ -117,6 +117,7 @@ class GeooptBurstOptimizer(Optimizer):
             )
 
         self.current_step = 0
+        self.burst_count = 0
         self.loss_history = []
         self.smoothed_loss = None
 
@@ -279,6 +280,7 @@ class GeooptBurstOptimizer(Optimizer):
 
             if apply_burst:
                 group["twist"] = 0.0
+                self.burst_count += 1
 
             # Apply updates
             for p in group["params"]:

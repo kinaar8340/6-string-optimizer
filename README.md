@@ -71,6 +71,7 @@ Derivation: Nielsen & Okamura (2026) — `~/Projects/Fisher_Rao/proof.pdf`.
 
 ```bash
 python examples/rosenbrock_fr_benchmark.py
+python scripts/compare_fr_modulation.py --steps 8000
 python tests/test_fisher_rao.py
 ```
 
