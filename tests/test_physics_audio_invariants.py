@@ -103,6 +103,12 @@ def test_modal_amp_pair_invariant_zero_on_match():
     assert loss.item() < 1e-6
 
 
+def test_modal_amp_pair_invariant_mismatch_bounded():
+    pred = torch.tensor([0.2, 0.3, 0.5, 0.1, 0.4, 0.2, 0.3, 0.25])
+    loss = modal_amp_pair_invariant_loss(pred * 0.8, pred)
+    assert 0.0 < loss.item() < 1.0
+
+
 def test_modal_amp_pair_invariant_uses_temporal_obs():
     pred = torch.tensor([0.2, 0.3, 0.5, 0.1, 0.4, 0.2, 0.3, 0.25])
     temporal = pred.unsqueeze(0).expand(10, -1) + torch.randn(10, 8) * 0.01
@@ -187,6 +193,7 @@ if __name__ == "__main__":
     test_speed_profile_invariant_zero_on_match()
     test_inharm_profile_invariant_scale_quotient()
     test_modal_amp_pair_invariant_zero_on_match()
+    test_modal_amp_pair_invariant_mismatch_bounded()
     test_modal_amp_pair_invariant_uses_temporal_obs()
     test_resolve_target_mode_amps_prefers_piptrack()
     test_mse_prior_skip_terms_when_phase4_active()

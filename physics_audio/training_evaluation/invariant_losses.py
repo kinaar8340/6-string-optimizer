@@ -61,11 +61,12 @@ def modal_amp_pair_invariant_loss(
     singular_weight: float = 1.0,
 ) -> torch.Tensor:
     """
-    Prop 3.3 / 4.2 pair invariant on log-modal amplitude profiles.
+    Prop 3.3 pair invariant on log-modal amplitude profiles.
 
-    Bundles per-mode log amplitudes as location mu and diagonal scale V
-    (temporal variance from piptrack when obs is (T, K)).  Invariant to
-    positive scaling of the observed amplitude vector.
+    Compares predicted per-mode log amps to the observation mean (piptrack
+    temporal mean when obs is (T, K)) with V1 = V2 = I_K, matching the
+    damping coefficient invariant.  Temporal piptrack variance informs the
+    target location only; scale symmetry is handled by the pair reduction.
     """
     pred = _collapse_modal_amps(pred_amps)
     obs = obs_amps.float()
@@ -74,25 +75,20 @@ def modal_amp_pair_invariant_loss(
 
     log_pred = torch.log(pred.clamp(min=1e-8))
     mu1 = log_pred
-    var1 = torch.full((k,), log_pred.var().item() + 1e-4, device=device, dtype=dtype)
 
     if obs.dim() == 2:
         log_obs = torch.log(obs.clamp(min=1e-8))
         mu2 = log_obs.mean(dim=0)
-        var2 = log_obs.var(dim=0) + 1e-4
     else:
         obs_k = _collapse_modal_amps(obs)
-        log_obs = torch.log(obs_k.clamp(min=1e-8))
-        mu2 = log_obs
-        var2 = torch.full((k,), log_obs.var().item() + 1e-4, device=device, dtype=dtype)
+        mu2 = torch.log(obs_k.clamp(min=1e-8))
 
-    v1 = torch.diag(var1)
-    v2 = torch.diag(var2)
-    nu, s = fisher_rao_canonical_pair(mu1, v1, mu2, v2)
+    eye = torch.eye(k, device=device, dtype=dtype)
+    inv = location_scale_pair_invariant(mu1, eye, mu2, eye)
 
-    loss = nu.pow(2).sum()
+    loss = inv.block_norms.pow(2).mean()
     if singular_weight > 0.0:
-        loss = loss + singular_weight * (torch.linalg.svdvals(s) - 1.0).pow(2).sum()
+        loss = loss + singular_weight * (inv.singular_values - 1.0).pow(2).mean()
     return loss
 
 

@@ -10,5 +10,6 @@ Derivation reference: Nielsen & Okamura (2026), *Group invariance of f-divergenc
 | Thm 2.3 — double coset maximal invariant | `invariants.location_scale_pair_invariant` |
 | Prop 3.3 — SVD singular values + block norms of \(U^\top\nu\) | `LocationScaleMaximalInvariant` |
 | Prop 4.2 — FR canonical reduction | `invariants.fisher_rao_canonical_pair` |
+| Phase 3 — modal amp pair invariant | `physics_audio/.../modal_amp_pair_invariant_loss` |
 | Simplex FR metric (sqrt-sphere) | `metrics.sqrt_embed`, `metrics.fisher_rao_distance` |
 | Fisher-info burst modulation | `burst_modulation.FisherInfoBurstModulator` |

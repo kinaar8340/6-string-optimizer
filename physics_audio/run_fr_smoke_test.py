@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Fisher-Rao Phase 1–2 smoke test on synthetic Stiefel data.
+Fisher-Rao Phase 1–3 smoke test on synthetic Stiefel data.
 
 Arms (identical init):
   1. baseline — geo + priors
   2. phase1 — + damping invariant (Prop 3.3)
   3. phase2 — + coupling SV invariant + speed/inharm FR profiles
+  4. phase3 — + modal amp pair invariant (Prop 3.3 / 4.2)
 
 Usage (from physics_audio/):
   python run_fr_smoke_test.py --steps 1200
@@ -39,10 +40,12 @@ from training_evaluation.config import (
     fr_invariant_coupling,
     fr_invariant_speed,
     fr_invariant_inharm,
+    fr_invariant_modal,
 )
 from training_evaluation.model import StiefelDampedCoupledInharmGR
 from training_evaluation.utils import safe_proj, get_pca_initial_basis, manifold
 from training_evaluation.losses import total_loss
+from training_evaluation.invariant_losses import modal_amp_pair_invariant_loss
 from training_evaluation.fr_utils import (
     extract_coupling_skew,
     fr_loss_kwargs_from_batch,
@@ -80,6 +83,16 @@ def generate_synthetic(seed: int, noise_amp: float, device: torch.device):
         "speed_scalars": torch.ones(K_MODES, device=device) * VELOCITY_SCALE_BASE,
         "inharm_b": TRUE_INHARM_B,
         "coupling_strength": TRUE_COUPLING_STRENGTH,
+        "modal_obs": modal_spectral_envelope(data),
+        "modal_mean": mode_amplitudes_from_stiefel(data),
+        "prior_targets": {
+            "damping_rates": TRUE_DAMPING_RATES,
+            "coupling_strength": TRUE_COUPLING_STRENGTH,
+            "inharm_b": TRUE_INHARM_B,
+            "speed_mean": VELOCITY_SCALE_BASE,
+            "partial_amps_temporal": modal_spectral_envelope(data),
+            "partial_amps_mean": mode_amplitudes_from_stiefel(data),
+        },
     }
     return data, times, get_pca_initial_basis(data, K_MODES), refs
 
@@ -97,9 +110,10 @@ def run_arm(
     fr_invariant_coupling: float = 0.0,
     fr_invariant_speed: float = 0.0,
     fr_invariant_inharm: float = 0.0,
+    fr_invariant_modal: float = 0.0,
 ) -> dict:
     device = data_points.device
-    target_mode_amps = mode_amplitudes_from_stiefel(data_points)
+    target_mode_amps = refs["modal_mean"]
     target_spectrum = modal_spectral_envelope(data_points)
 
     model = StiefelDampedCoupledInharmGR(DIM, K_MODES, initial_basis)
@@ -119,6 +133,7 @@ def run_arm(
             preds, damping_rates, coupling_strength, inharm_b, speed_scalars, _ = model(times)
             loss = total_loss(
                 preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+                prior_targets=refs["prior_targets"],
                 log_base_rate=model.log_base_rate,
                 log_slope=model.log_slope,
                 coupling_skew=extract_coupling_skew(model),
@@ -129,9 +144,11 @@ def run_arm(
                 fr_invariant_coupling_override=fr_invariant_coupling,
                 fr_invariant_speed_override=fr_invariant_speed,
                 fr_invariant_inharm_override=fr_invariant_inharm,
+                fr_invariant_modal_override=fr_invariant_modal,
                 **fr_loss_kwargs_from_batch(
                     preds, data_points, fr_mode_weight=0.0, fr_spectral_weight=0.0,
                     fr_invariant_weight=fr_invariant_weight,
+                    fr_invariant_modal=fr_invariant_modal,
                     target_mode_amps=target_mode_amps, target_spectrum=target_spectrum,
                 ),
             )
@@ -146,6 +163,7 @@ def run_arm(
         preds, damping_rates, coupling_strength, inharm_b, speed_scalars, _ = model(times)
         final = total_loss(
             preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
+            prior_targets=refs["prior_targets"],
             log_base_rate=model.log_base_rate,
             log_slope=model.log_slope,
             coupling_skew=extract_coupling_skew(model),
@@ -156,21 +174,31 @@ def run_arm(
             fr_invariant_coupling_override=fr_invariant_coupling,
             fr_invariant_speed_override=fr_invariant_speed,
             fr_invariant_inharm_override=fr_invariant_inharm,
+            fr_invariant_modal_override=fr_invariant_modal,
+            **fr_loss_kwargs_from_batch(
+                preds, data_points, fr_mode_weight=0.0, fr_spectral_weight=0.0,
+                fr_invariant_weight=fr_invariant_weight,
+                fr_invariant_modal=fr_invariant_modal,
+                target_mode_amps=target_mode_amps,
+            ),
         ).item()
         learned_skew = extract_coupling_skew(model)
         sv_err = (torch.linalg.svdvals(learned_skew.float())
                   - torch.linalg.svdvals(refs["coupling_skew"].float())).pow(2).sum().item()
+        learned_amps = mode_amplitudes_from_stiefel(preds)
+        modal_pair = modal_amp_pair_invariant_loss(learned_amps, refs["modal_obs"]).item()
 
     return {
         "label": label,
         "final_loss": final,
         "best_loss": best,
         "coupling_sv_mse": sv_err,
+        "modal_pair_loss": modal_pair,
     }
 
 
 def main():
-    p = argparse.ArgumentParser(description="Fisher-Rao Phase 1–2 physics_audio smoke test")
+    p = argparse.ArgumentParser(description="Fisher-Rao Phase 1–3 physics_audio smoke test")
     p.add_argument("--steps", type=int, default=1200)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--noise", type=float, default=0.04)
@@ -183,29 +211,36 @@ def main():
     init_state = copy.deepcopy(StiefelDampedCoupledInharmGR(DIM, K_MODES, basis).to(device).state_dict())
 
     arms = [
-        ("baseline", 0.0, 0.0, 0.0, 0.0),
-        ("phase1_damping", 0.3, 0.0, 0.0, 0.0),
-        ("phase2_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm),
+        ("baseline", 0.0, 0.0, 0.0, 0.0, 0.0),
+        ("phase1_damping", 0.3, 0.0, 0.0, 0.0, 0.0),
+        ("phase2_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, 0.0),
+        ("phase3_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal),
     ]
 
-    print(f"Phase 1–2 smoke | dim={DIM} k={K_MODES} steps={args.steps} seed={args.seed}\n")
+    print(f"Phase 1–3 smoke | dim={DIM} k={K_MODES} steps={args.steps} seed={args.seed}\n")
     results = []
-    for label, inv_w, coup_w, speed_w, inharm_w in arms:
+    for label, inv_w, coup_w, speed_w, inharm_w, modal_w in arms:
         r = run_arm(
             label, data, times, basis, init_state, refs, args.steps,
             fr_invariant_weight=inv_w,
             fr_invariant_coupling=coup_w,
             fr_invariant_speed=speed_w,
             fr_invariant_inharm=inharm_w,
+            fr_invariant_modal=modal_w,
         )
         results.append(r)
         print(
             f"  {label:18s} | final={r['final_loss']:.4f} best={r['best_loss']:.4f} "
-            f"| coupling_sv_mse={r['coupling_sv_mse']:.4e}"
+            f"| coupling_sv_mse={r['coupling_sv_mse']:.4e} "
+            f"| modal_pair={r['modal_pair_loss']:.4e}"
         )
 
-    delta = results[-1]["best_loss"] - results[0]["best_loss"]
-    print(f"\nΔ best_loss (phase2 - baseline): {delta:+.4f}")
+    delta2 = results[2]["best_loss"] - results[0]["best_loss"]
+    delta3 = results[3]["best_loss"] - results[0]["best_loss"]
+    modal_delta = results[3]["modal_pair_loss"] - results[0]["modal_pair_loss"]
+    print(f"\nΔ best_loss (phase2 - baseline): {delta2:+.4f}")
+    print(f"Δ best_loss (phase3 - baseline): {delta3:+.4f}")
+    print(f"Δ modal_pair (phase3 - baseline): {modal_delta:+.4e}")
 
 
 if __name__ == "__main__":

@@ -62,4 +62,6 @@ python run_real_audio.py --audio note.wav \
 `build_prior_targets` supplies `speed_scalars` (uniform at f0-derived scale) and
 `inharm_b` (estimated B per harmonic) as references.
 
+**Next:** Phase 3 modal amp pair invariant — `fisher_rao/PHASE3.md`.
+
 Derivation: `~/Projects/Fisher_Rao/proof.pdf` (Thm 2.3, Prop 3.3 — singular values as maximal invariants).

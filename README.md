@@ -78,6 +78,8 @@ cd physics_audio && python run_fr_smoke_test.py --steps 1200
 
 **Phase 2:** coupling skew singular-value invariant + speed/inharm FR profile losses — see `fisher_rao/PHASE2.md`.
 
+**Phase 3:** piptrack modal amp pair invariant (Prop 3.3 / 4.2 on log-amp profiles) — see `fisher_rao/PHASE3.md`.
+
 ---
 
 ## Key Features
