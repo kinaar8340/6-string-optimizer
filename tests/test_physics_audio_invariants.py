@@ -22,7 +22,10 @@ from training_evaluation.invariant_losses import (
     inharm_profile_invariant_loss,
 )
 from training_evaluation.fr_utils import resolve_target_mode_amps
-from training_evaluation.losses import prior_loss, _mse_prior_skip_terms
+from training_evaluation.losses import prior_loss, total_loss, _mse_prior_skip_terms
+from training_evaluation.fr_utils import extract_coupling_skew
+from training_evaluation.config import TRUE_DAMPING_RATES, K_MODES, DIM
+from training_evaluation.model import StiefelDampedCoupledInharmGR
 from training_evaluation.config import (
     fr_invariant_damping,
     fr_invariant_coupling,
@@ -177,6 +180,35 @@ def test_prior_loss_skips_damping_mse_when_requested():
     assert (full - skipped).item() > 0.0
 
 
+def test_total_loss_phase4_replace_lowers_prior_contribution():
+    torch.manual_seed(0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    times = torch.linspace(-1.0, 1.0, 12, device=device)
+    data = torch.randn(12, DIM, K_MODES, device=device)
+    model = StiefelDampedCoupledInharmGR(DIM, K_MODES, data[0]).to(device)
+    preds, damping, coupling, inharm, speed, _ = model(times)
+    skew = extract_coupling_skew(model)
+    common = dict(
+        preds=preds,
+        data_points=data,
+        damping_rates=damping,
+        coupling_strength=coupling,
+        inharm_b=inharm,
+        speed_scalars=speed,
+        prior_targets={"damping_rates": TRUE_DAMPING_RATES.to(device)},
+        log_base_rate=model.log_base_rate,
+        log_slope=model.log_slope,
+        coupling_skew=skew,
+        fr_invariant_weight_override=0.3,
+        fr_invariant_coupling_override=0.5,
+        fr_invariant_speed_override=0.25,
+        fr_invariant_inharm_override=0.25,
+    )
+    with_replace = total_loss(**common, fr_replace_mse_priors_override=True)
+    with_augment = total_loss(**common, fr_replace_mse_priors_override=False)
+    assert with_augment.item() > with_replace.item()
+
+
 def test_harmonic_design_matrix_shape():
     design = harmonic_design_matrix(8, device=torch.device("cpu"))
     assert design.shape == (8, 2)
@@ -199,5 +231,6 @@ if __name__ == "__main__":
     test_mse_prior_skip_terms_when_phase4_active()
     test_mse_prior_skip_empty_when_augment_mode()
     test_prior_loss_skips_damping_mse_when_requested()
+    test_total_loss_phase4_replace_lowers_prior_contribution()
     test_harmonic_design_matrix_shape()
     print("physics_audio invariant tests passed.")

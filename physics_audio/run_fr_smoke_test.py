@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Fisher-Rao Phase 1–3 smoke test on synthetic Stiefel data.
+Fisher-Rao Phase 1–4 smoke test on synthetic Stiefel data.
 
 Arms (identical init):
   1. baseline — geo + priors
   2. phase1 — + damping invariant (Prop 3.3)
   3. phase2 — + coupling SV invariant + speed/inharm FR profiles
-  4. phase3 — + modal amp pair invariant (Prop 3.3 / 4.2)
+  4. phase3_full — + modal amp pair invariant (Phase 4 replace on, default)
+  5. phase3_augment — same invariants, MSE priors retained (Phase 4 ablation)
 
 Usage (from physics_audio/):
   python run_fr_smoke_test.py --steps 1200
@@ -111,6 +112,7 @@ def run_arm(
     fr_invariant_speed: float = 0.0,
     fr_invariant_inharm: float = 0.0,
     fr_invariant_modal: float = 0.0,
+    fr_replace_mse_priors: bool = True,
 ) -> dict:
     device = data_points.device
     target_mode_amps = refs["modal_mean"]
@@ -145,6 +147,7 @@ def run_arm(
                 fr_invariant_speed_override=fr_invariant_speed,
                 fr_invariant_inharm_override=fr_invariant_inharm,
                 fr_invariant_modal_override=fr_invariant_modal,
+                fr_replace_mse_priors_override=fr_replace_mse_priors,
                 **fr_loss_kwargs_from_batch(
                     preds, data_points, fr_mode_weight=0.0, fr_spectral_weight=0.0,
                     fr_invariant_weight=fr_invariant_weight,
@@ -175,6 +178,7 @@ def run_arm(
             fr_invariant_speed_override=fr_invariant_speed,
             fr_invariant_inharm_override=fr_invariant_inharm,
             fr_invariant_modal_override=fr_invariant_modal,
+            fr_replace_mse_priors_override=fr_replace_mse_priors,
             **fr_loss_kwargs_from_batch(
                 preds, data_points, fr_mode_weight=0.0, fr_spectral_weight=0.0,
                 fr_invariant_weight=fr_invariant_weight,
@@ -198,7 +202,7 @@ def run_arm(
 
 
 def main():
-    p = argparse.ArgumentParser(description="Fisher-Rao Phase 1–3 physics_audio smoke test")
+    p = argparse.ArgumentParser(description="Fisher-Rao Phase 1–4 physics_audio smoke test")
     p.add_argument("--steps", type=int, default=1200)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--noise", type=float, default=0.04)
@@ -210,16 +214,24 @@ def main():
     torch.manual_seed(args.seed)
     init_state = copy.deepcopy(StiefelDampedCoupledInharmGR(DIM, K_MODES, basis).to(device).state_dict())
 
+    full_inv = (
+        0.3,
+        fr_invariant_coupling,
+        fr_invariant_speed,
+        fr_invariant_inharm,
+        fr_invariant_modal,
+    )
     arms = [
-        ("baseline", 0.0, 0.0, 0.0, 0.0, 0.0),
-        ("phase1_damping", 0.3, 0.0, 0.0, 0.0, 0.0),
-        ("phase2_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, 0.0),
-        ("phase3_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal),
+        ("baseline", 0.0, 0.0, 0.0, 0.0, 0.0, True),
+        ("phase1_damping", 0.3, 0.0, 0.0, 0.0, 0.0, True),
+        ("phase2_full", 0.3, fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, 0.0, True),
+        ("phase3_full", *full_inv, True),
+        ("phase3_augment", *full_inv, False),
     ]
 
-    print(f"Phase 1–3 smoke | dim={DIM} k={K_MODES} steps={args.steps} seed={args.seed}\n")
+    print(f"Phase 1–4 smoke | dim={DIM} k={K_MODES} steps={args.steps} seed={args.seed}\n")
     results = []
-    for label, inv_w, coup_w, speed_w, inharm_w, modal_w in arms:
+    for label, inv_w, coup_w, speed_w, inharm_w, modal_w, replace_mse in arms:
         r = run_arm(
             label, data, times, basis, init_state, refs, args.steps,
             fr_invariant_weight=inv_w,
@@ -227,6 +239,7 @@ def main():
             fr_invariant_speed=speed_w,
             fr_invariant_inharm=inharm_w,
             fr_invariant_modal=modal_w,
+            fr_replace_mse_priors=replace_mse,
         )
         results.append(r)
         print(
@@ -237,9 +250,11 @@ def main():
 
     delta2 = results[2]["best_loss"] - results[0]["best_loss"]
     delta3 = results[3]["best_loss"] - results[0]["best_loss"]
+    delta4 = results[4]["best_loss"] - results[3]["best_loss"]
     modal_delta = results[3]["modal_pair_loss"] - results[0]["modal_pair_loss"]
     print(f"\nΔ best_loss (phase2 - baseline): {delta2:+.4f}")
     print(f"Δ best_loss (phase3 - baseline): {delta3:+.4f}")
+    print(f"Δ best_loss (augment - replace): {delta4:+.4f}")
     print(f"Δ modal_pair (phase3 - baseline): {modal_delta:+.4e}")
 
 
