@@ -1,18 +1,22 @@
 """
 Group-invariant reductions for transformation models.
 
-Inspired by: "Group invariance of f-divergences and the Fisher–Rao distance"
-— distances reduce to maximal invariants under group actions on parameter space.
+Derivation: Nielsen & Okamura, "Group invariance of f-divergences and the
+Fisher-Rao distance" (see ~/Projects/Fisher_Rao/proof.pdf).
 
-Practical quotients implemented here:
-- Scale invariance (positive scaling symmetry)
-- Rotation invariance (orthogonal action → singular values)
-- Location-scale (multivariate normal family → relative scale singular values + location norm)
+Key results used here:
+- Theorem 2.1: f-divergences invariant under transformation model (2.2)
+- Theorem 2.3: transitive actions → maximal invariant is double coset H g1^{-1} g2 H
+- Proposition 3.3: location-scale pair invariant = singular values of S = V2^{-1}V1
+  plus block norms of U^T nu where nu = V2^{-1}(mu1 - mu2)
+- Proposition 4.2: Fisher-Rao distance has the same invariant reduction;
+  d_FR((mu1,[V1]),(mu2,[V2])) = d_FR((nu,[S]),(0,[Id]))
 """
 
 from __future__ import annotations
 
 import torch
+from typing import NamedTuple
 
 
 def scale_quotient(x: torch.Tensor, mode: str = "l2") -> torch.Tensor:
@@ -33,6 +37,91 @@ def rotation_singular_invariants(matrix: torch.Tensor) -> torch.Tensor:
     Under O(m) × O(n) actions, singular values are maximal invariants.
     """
     return torch.linalg.svdvals(matrix.float())
+
+
+class LocationScaleMaximalInvariant(NamedTuple):
+    """Maximal invariant coordinates from Proposition 3.3 / 4.2 (proof.pdf)."""
+
+    singular_values: torch.Tensor  # (k,) strictly decreasing tau_1 > ... > tau_k
+    multiplicities: list[int]       # block sizes m_1, ..., m_k
+    block_norms: torch.Tensor       # (k,) norms r_j = ||z^{(j)}||
+    relative_scale: torch.Tensor    # S = V2^{-1} V1
+    whitened_location: torch.Tensor # nu = V2^{-1}(mu1 - mu2)
+
+
+def _svd_block_norms(singular_values: torch.Tensor, z: torch.Tensor, tol: float = 1e-6) -> tuple[list[int], torch.Tensor]:
+    """Group z by equal singular values; return multiplicities and block norms."""
+    sv = singular_values.flatten()
+    z = z.flatten()
+    d = sv.numel()
+    if d == 0:
+        return [], torch.tensor([], dtype=z.dtype, device=z.device)
+
+    multiplicities: list[int] = []
+    block_norms: list[torch.Tensor] = []
+    start = 0
+    for i in range(1, d + 1):
+        if i == d or (sv[start] - sv[i]).abs() > tol:
+            m = i - start
+            multiplicities.append(m)
+            block_norms.append(z[start:i].norm())
+            start = i
+
+    return multiplicities, torch.stack(block_norms)
+
+
+def location_scale_pair_invariant(
+    mu1: torch.Tensor,
+    V1: torch.Tensor,
+    mu2: torch.Tensor,
+    V2: torch.Tensor,
+) -> LocationScaleMaximalInvariant:
+    """
+    Explicit maximal invariant for Aff(d)-equivariant location-scale pairs.
+
+    Implements Proposition 3.3: for theta_i = (mu_i, V_i) in R^d x GL(d,R),
+        S = V2^{-1} V1,  nu = V2^{-1}(mu1 - mu2)
+    take SVD S = U diag(tau) W^T, z = U^T nu, and block norms r_j = ||z^{(j)}||
+    determined by multiplicities of tau.
+
+    Every invariant f-divergence and (Prop 4.2) the Fisher-Rao distance depend
+    only on (tau, multiplicities, block_norms).
+    """
+    mu1 = mu1.float().flatten()
+    mu2 = mu2.float().flatten()
+    V1 = V1.float()
+    V2 = V2.float()
+
+    S = torch.linalg.solve(V2, V1)
+    nu = torch.linalg.solve(V2, mu1 - mu2)
+
+    U, singular_values, _ = torch.linalg.svd(S, full_matrices=False)
+    z = U.T @ nu
+    multiplicities, block_norms = _svd_block_norms(singular_values, z)
+
+    return LocationScaleMaximalInvariant(
+        singular_values=singular_values,
+        multiplicities=multiplicities,
+        block_norms=block_norms,
+        relative_scale=S,
+        whitened_location=nu,
+    )
+
+
+def fisher_rao_canonical_pair(
+    mu1: torch.Tensor,
+    V1: torch.Tensor,
+    mu2: torch.Tensor,
+    V2: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Proposition 4.2 reduction: map pair ((mu1,[V1]),(mu2,[V2])) to canonical
+    ((nu,[S]),(0,[Id])) with the same Fisher-Rao distance.
+
+    Returns (nu, S) where nu = V2^{-1}(mu1 - mu2), S = V2^{-1} V1.
+    """
+    inv = location_scale_pair_invariant(mu1, V1, mu2, V2)
+    return inv.whitened_location, inv.relative_scale
 
 
 def location_scale_invariants(

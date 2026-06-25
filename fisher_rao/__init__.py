@@ -14,8 +14,11 @@ from .fisher_info import (
     fisher_modulation_factors,
 )
 from .invariants import (
+    LocationScaleMaximalInvariant,
     scale_quotient,
     rotation_singular_invariants,
+    location_scale_pair_invariant,
+    fisher_rao_canonical_pair,
     location_scale_invariants,
     project_to_invariants,
 )
@@ -39,8 +42,11 @@ __all__ = [
     "score_norm_proxy",
     "fisher_info_trace_hvp",
     "fisher_modulation_factors",
+    "LocationScaleMaximalInvariant",
     "scale_quotient",
     "rotation_singular_invariants",
+    "location_scale_pair_invariant",
+    "fisher_rao_canonical_pair",
     "location_scale_invariants",
     "project_to_invariants",
     "fisher_rao_loss",

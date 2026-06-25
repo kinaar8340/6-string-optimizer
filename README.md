@@ -61,11 +61,12 @@ Thank you from the bottom of my heart — truly. ❤️
 
 ## Fisher-Rao Extensions (branch: `feature/fisher-rao`)
 
-Information-geometric extensions live in `~/Projects/Fisher_Rao/` (also vendored as `fisher_rao/`):
+Information-geometric extensions live in `~/Projects/Fisher_Rao/` (also vendored as `fisher_rao/`).  
+Derivation: Nielsen & Okamura (2026) — `~/Projects/Fisher_Rao/proof.pdf`.
 
 - **FisherRaoSphere** manifold — sqrt-embedding of probability simplices
 - **Fisher-info burst modulation** — `use_fisher_modulation=True` on `GeooptBurstOptimizer`
-- **Group-invariant reductions** — scale/rotation/location-scale quotients
+- **Group-invariant reductions** — `location_scale_pair_invariant` (Prop 3.3), `fisher_rao_canonical_pair` (Prop 4.2)
 - **physics_audio FR losses** — `fr_spectral_weight`, `fr_mode_weight` in `total_loss()`
 
 ```bash
