@@ -80,6 +80,8 @@ cd physics_audio && python run_fr_smoke_test.py --steps 1200
 
 **Phase 3:** piptrack modal amp pair invariant (Prop 3.3 / 4.2 on log-amp profiles) — see `fisher_rao/PHASE3.md`.
 
+**Phase 4:** drop redundant MSE priors when invariants are active (`fr_replace_mse_priors`) — see `fisher_rao/PHASE4.md`.
+
 ---
 
 ## Key Features

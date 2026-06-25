@@ -23,8 +23,7 @@ per-mode temporal means for μ₂.
 | `fr_invariant_modal` | 0.4 |
 | `REAL_AUDIO_FR_MODE_WEIGHT` | 0.2 (separate simplex FR loss, not the pair invariant) |
 
-Phase 4 (`fr_replace_mse_priors=True`) drops redundant MSE priors when matching
-invariants are active; use `--fr_augment_priors` on real audio to keep both.
+**Next:** Phase 4 MSE prior replacement — `fisher_rao/PHASE4.md`.
 
 ## Synthetic references
 
