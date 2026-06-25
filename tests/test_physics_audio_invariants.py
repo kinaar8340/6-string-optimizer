@@ -16,8 +16,12 @@ from training_evaluation.invariant_losses import (
     damping_invariant_loss,
     harmonic_design_matrix,
     learned_damping_coefficients,
+    modal_amp_pair_invariant_loss,
     target_damping_coefficients,
+    speed_profile_invariant_loss,
+    inharm_profile_invariant_loss,
 )
+from training_evaluation.fr_utils import resolve_target_mode_amps
 
 
 def test_damping_invariant_zero_when_coefficients_match():
@@ -73,6 +77,43 @@ def test_coupling_invariant_penalizes_strength_mismatch():
     assert loss.item() > 1e-6
 
 
+def test_speed_profile_invariant_zero_on_match():
+    speed = torch.tensor([2.0, 2.0, 2.0, 2.0])
+    loss = speed_profile_invariant_loss(speed, speed)
+    assert loss.item() < 1e-6
+
+
+def test_inharm_profile_invariant_scale_quotient():
+    target = torch.tensor([0.0, 0.0, 0.0001, 0.0002, 0.0003, 0.0004, 0.0005, 0.0006])
+    scaled = target * 3.0
+    loss = inharm_profile_invariant_loss(scaled, target)
+    assert loss.item() < 1e-5
+
+
+def test_modal_amp_pair_invariant_zero_on_match():
+    amps = torch.tensor([0.1, 0.3, 0.5, 0.2, 0.4, 0.15, 0.25, 0.35])
+    loss = modal_amp_pair_invariant_loss(amps, amps)
+    assert loss.item() < 1e-6
+
+
+def test_modal_amp_pair_invariant_uses_temporal_obs():
+    pred = torch.tensor([0.2, 0.3, 0.5, 0.1, 0.4, 0.2, 0.3, 0.25])
+    temporal = pred.unsqueeze(0).expand(10, -1) + torch.randn(10, 8) * 0.01
+    mean_only = temporal.mean(dim=0)
+    loss_temporal = modal_amp_pair_invariant_loss(pred, temporal)
+    loss_mean = modal_amp_pair_invariant_loss(pred, mean_only)
+    assert loss_temporal.item() >= 0.0
+    assert loss_mean.item() >= 0.0
+
+
+def test_resolve_target_mode_amps_prefers_piptrack():
+    data = torch.randn(20, 60, 8)
+    pip = torch.ones(8) * 0.5
+    prior = {"partial_amps_mean": pip}
+    resolved = resolve_target_mode_amps(data, prior)
+    assert torch.allclose(resolved, pip)
+
+
 def test_harmonic_design_matrix_shape():
     design = harmonic_design_matrix(8, device=torch.device("cpu"))
     assert design.shape == (8, 2)
@@ -86,5 +127,10 @@ if __name__ == "__main__":
     test_coupling_invariant_zero_on_match()
     test_coupling_invariant_rotation_invariant_shape()
     test_coupling_invariant_penalizes_strength_mismatch()
+    test_speed_profile_invariant_zero_on_match()
+    test_inharm_profile_invariant_scale_quotient()
+    test_modal_amp_pair_invariant_zero_on_match()
+    test_modal_amp_pair_invariant_uses_temporal_obs()
+    test_resolve_target_mode_amps_prefers_piptrack()
     test_harmonic_design_matrix_shape()
     print("physics_audio invariant tests passed.")

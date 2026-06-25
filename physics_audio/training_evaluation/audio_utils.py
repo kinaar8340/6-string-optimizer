@@ -299,21 +299,40 @@ def initialize_model_from_physics(
     return model
 
 
+def partial_amps_mean_tensor(partial_amps: np.ndarray) -> torch.Tensor:
+    """Time-averaged piptrack amplitude per mode, shape (K,)."""
+    mean = partial_amps.mean(axis=1).astype(np.float32)
+    mean = np.maximum(mean, 1e-8)
+    return torch.tensor(mean, device=device, dtype=torch.float32)
+
+
+def partial_amps_temporal_tensor(partial_amps: np.ndarray) -> torch.Tensor:
+    """Piptrack amplitudes as (T, K) for temporal modal invariants."""
+    amps = partial_amps.T.astype(np.float32)
+    amps = np.maximum(amps, 1e-8)
+    return torch.tensor(amps, device=device, dtype=torch.float32)
+
+
 def build_prior_targets(
     damping_rates: np.ndarray,
     f0_est: float,
     b_est: float,
     coupling_strength: float = 0.30,
+    partial_amps: np.ndarray | None = None,
 ) -> dict:
     """Build prior target dict for real-audio loss (replaces synthetic TRUE_* constants)."""
     harmonics = torch.arange(1, K_MODES + 1, device=device, dtype=torch.float32)
     inharm_b = torch.full((K_MODES,), b_est, device=device) * harmonics
-    return {
+    targets = {
         'damping_rates': torch.tensor(damping_rates, device=device, dtype=torch.float32),
         'coupling_strength': coupling_strength,
         'inharm_b': inharm_b,
         'speed_mean': f0_est / VELOCITY_SCALE_BASE,
     }
+    if partial_amps is not None:
+        targets['partial_amps_mean'] = partial_amps_mean_tensor(partial_amps)
+        targets['partial_amps_temporal'] = partial_amps_temporal_tensor(partial_amps)
+    return targets
 
 
 # ---------------------------------------------------------------------------

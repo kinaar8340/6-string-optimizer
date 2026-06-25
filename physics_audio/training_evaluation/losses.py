@@ -15,7 +15,9 @@ from .config import (
     inharm_l2_lambda, inharm_ceiling_lambda, inharm_ceiling_threshold,
     VELOCITY_SCALE_BASE, REAL_AUDIO_STFT_FFT_SIZES, REAL_AUDIO_STFT_HOP_RATIO,
     fr_invariant_weight, fr_invariant_damping, fr_invariant_coupling,
-    fr_invariant_coupling_strength_weight,
+    fr_invariant_coupling_strength_weight, fr_invariant_speed, fr_invariant_inharm,
+    fr_invariant_modal,
+    TRUE_INHARM_B,
 )
 from .utils import stiefel_dist
 
@@ -118,17 +120,31 @@ def total_loss(
     fr_invariant_weight_override: float | None = None,
     fr_invariant_damping_override: float | None = None,
     fr_invariant_coupling_override: float | None = None,
+    fr_invariant_speed_override: float | None = None,
+    fr_invariant_inharm_override: float | None = None,
+    fr_invariant_modal_override: float | None = None,
+    target_speed_scalars: torch.Tensor | None = None,
+    target_inharm_b: torch.Tensor | None = None,
 ):
     inv_weight = fr_invariant_weight if fr_invariant_weight_override is None else fr_invariant_weight_override
     inv_damping = fr_invariant_damping if fr_invariant_damping_override is None else fr_invariant_damping_override
     inv_coupling = fr_invariant_coupling if fr_invariant_coupling_override is None else fr_invariant_coupling_override
+    inv_speed = fr_invariant_speed if fr_invariant_speed_override is None else fr_invariant_speed_override
+    inv_inharm = fr_invariant_inharm if fr_invariant_inharm_override is None else fr_invariant_inharm_override
+    inv_modal = fr_invariant_modal if fr_invariant_modal_override is None else fr_invariant_modal_override
 
     loss = geo_loss(preds, data_points) + prior_loss(
         damping_rates, coupling_strength, inharm_b, speed_scalars, prior_targets=prior_targets,
     )
 
     if inv_weight > 0.0:
-        from .invariant_losses import damping_invariant_loss, coupling_invariant_loss
+        from .invariant_losses import (
+            damping_invariant_loss,
+            coupling_invariant_loss,
+            speed_profile_invariant_loss,
+            inharm_profile_invariant_loss,
+            modal_amp_pair_invariant_loss,
+        )
 
         if log_base_rate is not None and log_slope is not None:
             if prior_targets is not None:
@@ -155,6 +171,33 @@ def total_loss(
                 target_strength,
                 strength_weight=fr_invariant_coupling_strength_weight,
             )
+
+        if inv_speed > 0.0:
+            ref_speed = target_speed_scalars
+            if ref_speed is None and prior_targets is not None:
+                ref_speed = prior_targets.get("speed_scalars")
+            loss = loss + inv_weight * inv_speed * speed_profile_invariant_loss(speed_scalars, ref_speed)
+
+        if inv_inharm > 0.0:
+            ref_inharm = target_inharm_b
+            if ref_inharm is None:
+                if prior_targets is not None and prior_targets.get("inharm_b") is not None:
+                    ref_inharm = prior_targets["inharm_b"]
+                else:
+                    ref_inharm = TRUE_INHARM_B
+            loss = loss + inv_weight * inv_inharm * inharm_profile_invariant_loss(inharm_b, ref_inharm)
+
+        if inv_modal > 0.0 and mode_amps is not None:
+            modal_obs = target_mode_amps
+            if prior_targets is not None:
+                if "partial_amps_temporal" in prior_targets:
+                    modal_obs = prior_targets["partial_amps_temporal"]
+                elif "partial_amps_mean" in prior_targets:
+                    modal_obs = prior_targets["partial_amps_mean"]
+            if modal_obs is not None:
+                loss = loss + inv_weight * inv_modal * modal_amp_pair_invariant_loss(
+                    mode_amps, modal_obs,
+                )
     if stft_weight > 0.0 and synth_waveform is not None and target_waveform is not None:
         if synth_waveform.is_cuda or target_waveform.is_cuda:
             from .streaming_stft import multi_resolution_stft_loss_gpu

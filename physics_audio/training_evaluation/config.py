@@ -109,12 +109,17 @@ SWR_BEST_LOSS_EST = 0.12           # 0.15 Optimistic "characteristic impedance" 
 # Prop 3.3 damping envelope invariant (log_base_rate, log_slope vs target spectrum)
 fr_invariant_weight = 0.3
 fr_invariant_damping = 1.0
-# Phase 2: skew coupling singular-value invariant + log-strength quotient
+# Phase 2: rotation / scale invariants on coupling, speed, inharmonicity
 fr_invariant_coupling = 0.5
 fr_invariant_coupling_strength_weight = 0.1
-# Modal / spectral Fisher-Rao losses (0 = off; enable in smoke test or real-audio runs)
+fr_invariant_speed = 0.25
+fr_invariant_inharm = 0.25
+# Phase 3: piptrack modal amp pair invariant (Prop 3.3 on log-amp profiles)
+fr_invariant_modal = 0.4
+# Simplex Fisher-Rao on modal distributions (separate from pair invariant)
 fr_mode_weight = 0.0
 fr_spectral_weight = 0.0
+REAL_AUDIO_FR_MODE_WEIGHT = 0.2
 
 # === Real-audio extension ===
 REAL_AUDIO_MAX_STEPS = 20000

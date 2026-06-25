@@ -15,7 +15,11 @@ for candidate in (_ROOT, _FISHER_RAO_HOME):
         sys.path.insert(0, str(candidate))
 
 try:
-    from fisher_rao.invariants import location_scale_pair_invariant, rotation_singular_invariants
+    from fisher_rao.invariants import (
+        location_scale_pair_invariant,
+        rotation_singular_invariants,
+        fisher_rao_canonical_pair,
+    )
 except ImportError:
 
     def location_scale_pair_invariant(mu1, V1, mu2, V2):
@@ -37,6 +41,59 @@ except ImportError:
 
     def rotation_singular_invariants(matrix: torch.Tensor) -> torch.Tensor:
         return torch.linalg.svdvals(matrix.float())
+
+    def fisher_rao_canonical_pair(mu1, V1, mu2, V2):
+        inv = location_scale_pair_invariant(mu1, V1, mu2, V2)
+        return inv.whitened_location, inv.relative_scale
+
+
+def _collapse_modal_amps(amps: torch.Tensor) -> torch.Tensor:
+    """Reduce (K,) or (T, K) amplitudes to a single per-mode profile (K,)."""
+    amps = amps.float()
+    if amps.dim() == 2:
+        return amps.mean(dim=0)
+    return amps.flatten()
+
+
+def modal_amp_pair_invariant_loss(
+    pred_amps: torch.Tensor,
+    obs_amps: torch.Tensor,
+    singular_weight: float = 1.0,
+) -> torch.Tensor:
+    """
+    Prop 3.3 / 4.2 pair invariant on log-modal amplitude profiles.
+
+    Bundles per-mode log amplitudes as location mu and diagonal scale V
+    (temporal variance from piptrack when obs is (T, K)).  Invariant to
+    positive scaling of the observed amplitude vector.
+    """
+    pred = _collapse_modal_amps(pred_amps)
+    obs = obs_amps.float()
+    k = pred.numel()
+    device, dtype = pred.device, pred.dtype
+
+    log_pred = torch.log(pred.clamp(min=1e-8))
+    mu1 = log_pred
+    var1 = torch.full((k,), log_pred.var().item() + 1e-4, device=device, dtype=dtype)
+
+    if obs.dim() == 2:
+        log_obs = torch.log(obs.clamp(min=1e-8))
+        mu2 = log_obs.mean(dim=0)
+        var2 = log_obs.var(dim=0) + 1e-4
+    else:
+        obs_k = _collapse_modal_amps(obs)
+        log_obs = torch.log(obs_k.clamp(min=1e-8))
+        mu2 = log_obs
+        var2 = torch.full((k,), log_obs.var().item() + 1e-4, device=device, dtype=dtype)
+
+    v1 = torch.diag(var1)
+    v2 = torch.diag(var2)
+    nu, s = fisher_rao_canonical_pair(mu1, v1, mu2, v2)
+
+    loss = nu.pow(2).sum()
+    if singular_weight > 0.0:
+        loss = loss + singular_weight * (torch.linalg.svdvals(s) - 1.0).pow(2).sum()
+    return loss
 
 
 def harmonic_design_matrix(
@@ -141,3 +198,40 @@ def coupling_invariant_loss(
     scale_loss = torch.log(strength / target_s.clamp(min=1e-8)).pow(2)
 
     return shape_loss + strength_weight * scale_loss
+
+
+def _profile_fr_loss(learned: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Fisher-Rao distance between scale-quotient normalized 1D profiles."""
+    from fisher_rao.losses import fisher_rao_loss
+    from fisher_rao.invariants import scale_quotient
+
+    p = scale_quotient(learned.float().clamp(min=1e-12).unsqueeze(0), mode="sum")
+    q = scale_quotient(target.float().clamp(min=1e-12).unsqueeze(0), mode="sum")
+    return fisher_rao_loss(p, q)
+
+
+def speed_profile_invariant_loss(
+    speed_scalars: torch.Tensor,
+    target_speed_scalars: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Scale-invariant Fisher-Rao loss on per-mode speed distribution.
+
+    Quotients global scale (uniform stretch symmetry) before comparing profiles.
+    """
+    target = target_speed_scalars if target_speed_scalars is not None else speed_scalars.detach()
+    return _profile_fr_loss(speed_scalars, target)
+
+
+def inharm_profile_invariant_loss(
+    inharm_b: torch.Tensor,
+    target_inharm_b: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Scale-invariant Fisher-Rao loss on inharmonicity coefficient profile.
+
+    Targets near-zero inharmonicity collapse to a peaked distribution; FR
+    geometry handles the comparison without arbitrary L2 scale.
+    """
+    target = target_inharm_b if target_inharm_b is not None else inharm_b.detach()
+    return _profile_fr_loss(inharm_b, target)

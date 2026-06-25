@@ -30,6 +30,8 @@ from training_evaluation.config import (
     LIVE_MIC_BLOCKSIZE, LIVE_MIC_DEFAULT_SECONDS, GPU_STFT_N_FFT, GPU_STFT_HOP,
     fr_invariant_weight,
     fr_invariant_coupling,
+    fr_invariant_modal,
+    REAL_AUDIO_FR_MODE_WEIGHT,
 )
 from training_evaluation.model import StiefelDampedCoupledInharmGR
 from training_evaluation.audio_utils import (
@@ -136,6 +138,8 @@ def process_single_note(
     use_gpu_stft: bool = False,
     fr_invariant_weight_override: float | None = None,
     fr_invariant_coupling_override: float | None = None,
+    fr_invariant_modal_override: float | None = None,
+    fr_mode_weight_override: float | None = None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     note_name = audio_path.stem
@@ -172,17 +176,24 @@ def process_single_note(
     model = StiefelDampedCoupledInharmGR(DIM, K_MODES, data_points[0])
     model = initialize_model_from_physics(model, damping_rates, f0_est, b_est, data_points)
 
-    prior_targets = build_prior_targets(damping_rates, f0_est, b_est)
+    prior_targets = build_prior_targets(damping_rates, f0_est, b_est, partial_amps=partial_amps)
     target_waveform = torch.tensor(y, device=device, dtype=torch.float32)
 
     active_fr_inv = fr_invariant_weight if fr_invariant_weight_override is None else fr_invariant_weight_override
     active_fr_coup = (
         fr_invariant_coupling if fr_invariant_coupling_override is None else fr_invariant_coupling_override
     )
+    active_fr_modal = (
+        fr_invariant_modal if fr_invariant_modal_override is None else fr_invariant_modal_override
+    )
+    active_fr_mode = (
+        REAL_AUDIO_FR_MODE_WEIGHT if fr_mode_weight_override is None else fr_mode_weight_override
+    )
     jump_label = " + jump_test" if jump_test else ""
     print(
         f"Running optimization ({max_steps} steps, STFT={stft_weight}, "
-        f"fr_invariant={active_fr_inv}, fr_coupling={active_fr_coup}{jump_label})..."
+        f"fr_invariant={active_fr_inv}, fr_coupling={active_fr_coup}, "
+        f"fr_modal={active_fr_modal}, fr_mode={active_fr_mode}{jump_label})..."
     )
     result = run_single_seed(
         seed=seed,
@@ -196,6 +207,8 @@ def process_single_note(
         stft_weight=stft_weight,
         fr_invariant_weight=active_fr_inv,
         fr_invariant_coupling=active_fr_coup,
+        fr_invariant_modal=active_fr_modal,
+        fr_mode_weight=active_fr_mode,
         preinitialized_model=model,
         jump_test=jump_test,
     )
@@ -231,7 +244,8 @@ def process_single_note(
 
 def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, streaming,
               jump_test, use_gpu_stft, analyze_batch, n_clusters,
-              fr_invariant_weight_override=None, fr_invariant_coupling_override=None):
+              fr_invariant_weight_override=None, fr_invariant_coupling_override=None,
+              fr_invariant_modal_override=None, fr_mode_weight_override=None):
     files = discover_audio_files(audio_dir)
     if not files:
         raise FileNotFoundError(f"No audio files in {audio_dir}")
@@ -243,6 +257,8 @@ def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, str
             seed=seed + i, streaming=streaming, jump_test=jump_test, use_gpu_stft=use_gpu_stft,
             fr_invariant_weight_override=fr_invariant_weight_override,
             fr_invariant_coupling_override=fr_invariant_coupling_override,
+            fr_invariant_modal_override=fr_invariant_modal_override,
+            fr_mode_weight_override=fr_mode_weight_override,
         ))
     csv_path = output_dir / "batch_summary.csv"
     fields = ['name', 'file', 'duration_s', 'f0_est_hz', 'b_est', 'recon_mse',
@@ -369,6 +385,18 @@ def main():
         default=None,
         help=f"Coupling skew singular-value invariant weight (default config: {fr_invariant_coupling})",
     )
+    parser.add_argument(
+        "--fr_invariant_modal",
+        type=float,
+        default=None,
+        help=f"Piptrack modal amp pair invariant weight (default config: {fr_invariant_modal})",
+    )
+    parser.add_argument(
+        "--fr_mode_weight",
+        type=float,
+        default=None,
+        help=f"Simplex Fisher-Rao modal loss weight (default real-audio: {REAL_AUDIO_FR_MODE_WEIGHT})",
+    )
     parser.add_argument("--no_stft", action="store_true")
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--gpu_stft", action="store_true", help="Enable GPU streaming STFT path")
@@ -417,12 +445,14 @@ def main():
         run_batch(Path(args.audio_dir), output_dir, args.duration, args.max_steps,
                   stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                   args.analyze_batch, args.n_clusters, args.fr_invariant_weight,
-                  args.fr_invariant_coupling)
+                  args.fr_invariant_coupling, args.fr_invariant_modal, args.fr_mode_weight)
     else:
         process_single_note(Path(args.audio), output_dir, args.duration, args.max_steps,
                             stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                             fr_invariant_weight_override=args.fr_invariant_weight,
-                            fr_invariant_coupling_override=args.fr_invariant_coupling)
+                            fr_invariant_coupling_override=args.fr_invariant_coupling,
+                            fr_invariant_modal_override=args.fr_invariant_modal,
+                            fr_mode_weight_override=args.fr_mode_weight)
 
 
 if __name__ == "__main__":
