@@ -59,6 +59,22 @@ Thank you from the bottom of my heart — truly. ❤️
 
 ---
 
+## Fisher-Rao Extensions (branch: `feature/fisher-rao`)
+
+Information-geometric extensions live in `~/Projects/Fisher_Rao/` (also vendored as `fisher_rao/`):
+
+- **FisherRaoSphere** manifold — sqrt-embedding of probability simplices
+- **Fisher-info burst modulation** — `use_fisher_modulation=True` on `GeooptBurstOptimizer`
+- **Group-invariant reductions** — scale/rotation/location-scale quotients
+- **physics_audio FR losses** — `fr_spectral_weight`, `fr_mode_weight` in `total_loss()`
+
+```bash
+python examples/rosenbrock_fr_benchmark.py
+python tests/test_fisher_rao.py
+```
+
+---
+
 ## Key Features
 
 - **Twist-driven burst triggering** with dynamic threshold adaptation

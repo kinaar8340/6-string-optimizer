@@ -103,6 +103,12 @@ def total_loss(
     synth_waveform: torch.Tensor | None = None,
     target_waveform: torch.Tensor | None = None,
     stft_weight: float = 0.0,
+    fr_spectral_weight: float = 0.0,
+    pred_spectrum: torch.Tensor | None = None,
+    target_spectrum: torch.Tensor | None = None,
+    mode_amps: torch.Tensor | None = None,
+    target_mode_amps: torch.Tensor | None = None,
+    fr_mode_weight: float = 0.0,
 ):
     loss = geo_loss(preds, data_points) + prior_loss(
         damping_rates, coupling_strength, inharm_b, speed_scalars, prior_targets=prior_targets,
@@ -113,4 +119,10 @@ def total_loss(
             loss = loss + stft_weight * multi_resolution_stft_loss_gpu(synth_waveform, target_waveform)
         else:
             loss = loss + stft_weight * multi_resolution_stft_loss(synth_waveform, target_waveform)
+    if fr_spectral_weight > 0.0 and pred_spectrum is not None and target_spectrum is not None:
+        from .fisher_rao_losses import stft_bin_fr_loss
+        loss = loss + fr_spectral_weight * stft_bin_fr_loss(pred_spectrum, target_spectrum)
+    if fr_mode_weight > 0.0 and mode_amps is not None:
+        from .fisher_rao_losses import mode_amplitude_fr_loss
+        loss = loss + fr_mode_weight * mode_amplitude_fr_loss(mode_amps, target_mode_amps)
     return loss

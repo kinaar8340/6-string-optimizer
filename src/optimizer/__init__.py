@@ -14,6 +14,7 @@ from .burst_optimizer import GeooptBurstOptimizer, HierarchicalGeooptBurstOptimi
 from .models import SphereRosenbrockModel
 from .losses import rosenbrock_3d
 from .utils import stereographic_projection, get_device, to_device, set_seed
+from .manifolds import FisherRaoSphere, logits_to_fr_manifold_param
 
 # Optional: package metadata
 __version__ = "0.1.0"

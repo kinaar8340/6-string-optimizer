@@ -1,10 +1,32 @@
 
 # src/optimizer/burst_optimizer.py
 
+import sys
+from pathlib import Path
+
 import torch
 from torch.optim import Optimizer
 
 import geoopt
+
+def _ensure_fisher_rao_path() -> None:
+    candidates = [
+        Path(__file__).resolve().parents[2] / "fisher_rao",  # repo-local package parent
+        Path.home() / "Projects" / "Fisher_Rao",
+    ]
+    for root in candidates:
+        if root.exists() and str(root.parent) not in sys.path:
+            sys.path.insert(0, str(root.parent))
+            return
+
+
+_ensure_fisher_rao_path()
+
+try:
+    from fisher_rao.burst_modulation import FisherInfoBurstModulator
+except ImportError:
+    FisherInfoBurstModulator = None  # type: ignore[misc, assignment]
+
 
 class GeooptBurstOptimizer(Optimizer):
     """
@@ -45,6 +67,9 @@ class GeooptBurstOptimizer(Optimizer):
         adaptive_grad_clip=True,
         clip_quantile=0.95,
         clip_multiplier=2.0,
+        use_fisher_modulation=False,
+        fisher_modulator=None,
+        fisher_info_scale=100.0,
     ):
         defaults = dict(
             lr=lr,
@@ -78,6 +103,18 @@ class GeooptBurstOptimizer(Optimizer):
         self.good_improve_multiplier = good_improve_multiplier
 
         self.verbose = verbose
+
+        self.use_fisher_modulation = use_fisher_modulation
+        if fisher_modulator is not None:
+            self.fisher_modulator = fisher_modulator
+        elif use_fisher_modulation and FisherInfoBurstModulator is not None:
+            self.fisher_modulator = FisherInfoBurstModulator(info_scale=fisher_info_scale)
+        else:
+            self.fisher_modulator = None
+        if use_fisher_modulation and self.fisher_modulator is None:
+            raise ImportError(
+                "use_fisher_modulation=True requires fisher_rao package at ~/Projects/Fisher_Rao"
+            )
 
         self.current_step = 0
         self.loss_history = []
@@ -123,6 +160,7 @@ class GeooptBurstOptimizer(Optimizer):
 
         global_twist_proxy = 0.0
         global_num_instances = 0
+        stagnation_noise_scale = 1.0
 
         for group in self.param_groups:
             # Warm-up
@@ -161,6 +199,28 @@ class GeooptBurstOptimizer(Optimizer):
                 effective_damping = group["damping"]
                 effective_burst_factor = group["burst_factor_max"]
 
+            # Fisher-information modulation (conservative in high-curvature regions)
+            fisher_factors = None
+            effective_burst_threshold = group["burst_threshold"]
+            if self.use_fisher_modulation and self.fisher_modulator is not None and loss is not None:
+                params_with_grad = [p for p in group["params"] if p.grad is not None]
+                if params_with_grad:
+                    log_lik = -loss  # surrogate log-likelihood
+                    fisher_factors = self.fisher_modulator.update(params_with_grad, log_lik)
+                    effective_damping = min(
+                        0.999,
+                        effective_damping + fisher_factors["damping_boost"],
+                    )
+                    effective_burst_factor *= fisher_factors["burst_factor_scale"]
+                    effective_burst_threshold = group["burst_threshold"] * fisher_factors["threshold_scale"]
+                    stagnation_noise_scale = fisher_factors["stagnation_boost"]
+                    if self.verbose and self.current_step % 500 == 0:
+                        print(
+                            f"[Fisher] info={fisher_factors['smoothed_fisher_info']:.2e} "
+                            f"sens={fisher_factors['sensitivity']:.3f} "
+                            f"burst_scale={fisher_factors['burst_factor_scale']:.3f}"
+                        )
+
             # Second pass: clip, accumulate twist, update momentum
             for p in group["params"]:
                 if p.grad is None:
@@ -196,7 +256,7 @@ class GeooptBurstOptimizer(Optimizer):
                 state["v"] = group["momentum"] * state["v"] + effective_lr * clipped_rgrad
 
             # Burst logic
-            twist_triggered = group["twist"] > group["burst_threshold"]
+            twist_triggered = group["twist"] > effective_burst_threshold
             scheduled = (group["burst_schedule_interval"] > 0 and
                          self.current_step % group["burst_schedule_interval"] == 0)
             apply_burst = twist_triggered or scheduled
@@ -255,7 +315,7 @@ class GeooptBurstOptimizer(Optimizer):
                 improvement = self.loss_history[0] - loss_val
 
                 if improvement < self.stagnation_thresh:
-                    noise_amp = self.base_stagnation_noise_amp
+                    noise_amp = self.base_stagnation_noise_amp * stagnation_noise_scale
                     if self.verbose:
                         print(f"[Stagnation] Plateau detected → injecting noise (amp={noise_amp:.4f})")
 
