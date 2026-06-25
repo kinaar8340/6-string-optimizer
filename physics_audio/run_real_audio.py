@@ -28,6 +28,7 @@ from training_evaluation.config import (
     K_MODES, DIM, REAL_AUDIO_MAX_STEPS, REAL_AUDIO_STFT_WEIGHT, REAL_AUDIO_SR,
     JUMP_TEST_LOW_PATIENCE, JUMP_TEST_MIN_STEP, JUMP_TEST_FORCE_EVERY, JUMP_TEST_PLATEAU_AT,
     LIVE_MIC_BLOCKSIZE, LIVE_MIC_DEFAULT_SECONDS, GPU_STFT_N_FFT, GPU_STFT_HOP,
+    fr_invariant_weight,
 )
 from training_evaluation.model import StiefelDampedCoupledInharmGR
 from training_evaluation.audio_utils import (
@@ -132,6 +133,7 @@ def process_single_note(
     streaming: bool = False,
     jump_test: Optional[dict] = None,
     use_gpu_stft: bool = False,
+    fr_invariant_weight_override: float | None = None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     note_name = audio_path.stem
@@ -171,8 +173,12 @@ def process_single_note(
     prior_targets = build_prior_targets(damping_rates, f0_est, b_est)
     target_waveform = torch.tensor(y, device=device, dtype=torch.float32)
 
+    active_fr_inv = fr_invariant_weight if fr_invariant_weight_override is None else fr_invariant_weight_override
     jump_label = " + jump_test" if jump_test else ""
-    print(f"Running optimization ({max_steps} steps, STFT={stft_weight}{jump_label})...")
+    print(
+        f"Running optimization ({max_steps} steps, STFT={stft_weight}, "
+        f"fr_invariant={active_fr_inv}{jump_label})..."
+    )
     result = run_single_seed(
         seed=seed,
         real_audio_data=data_points,
@@ -183,6 +189,7 @@ def process_single_note(
         prior_targets=prior_targets,
         max_steps=max_steps,
         stft_weight=stft_weight,
+        fr_invariant_weight=active_fr_inv,
         preinitialized_model=model,
         jump_test=jump_test,
     )
@@ -217,7 +224,7 @@ def process_single_note(
 
 
 def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, streaming,
-              jump_test, use_gpu_stft, analyze_batch, n_clusters):
+              jump_test, use_gpu_stft, analyze_batch, n_clusters, fr_invariant_weight_override=None):
     files = discover_audio_files(audio_dir)
     if not files:
         raise FileNotFoundError(f"No audio files in {audio_dir}")
@@ -227,6 +234,7 @@ def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, str
         results.append(process_single_note(
             p, output_dir / p.stem, duration, max_steps, stft_weight,
             seed=seed + i, streaming=streaming, jump_test=jump_test, use_gpu_stft=use_gpu_stft,
+            fr_invariant_weight_override=fr_invariant_weight_override,
         ))
     csv_path = output_dir / "batch_summary.csv"
     fields = ['name', 'file', 'duration_s', 'f0_est_hz', 'b_est', 'recon_mse',
@@ -341,6 +349,12 @@ def main():
     parser.add_argument("--output_dir", type=str, default="real_audio_results")
     parser.add_argument("--max_steps", type=int, default=REAL_AUDIO_MAX_STEPS)
     parser.add_argument("--stft_weight", type=float, default=REAL_AUDIO_STFT_WEIGHT)
+    parser.add_argument(
+        "--fr_invariant_weight",
+        type=float,
+        default=None,
+        help=f"Damping double-coset prior weight (default config: {fr_invariant_weight})",
+    )
     parser.add_argument("--no_stft", action="store_true")
     parser.add_argument("--streaming", action="store_true")
     parser.add_argument("--gpu_stft", action="store_true", help="Enable GPU streaming STFT path")
@@ -388,10 +402,11 @@ def main():
     if args.audio_dir:
         run_batch(Path(args.audio_dir), output_dir, args.duration, args.max_steps,
                   stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
-                  args.analyze_batch, args.n_clusters)
+                  args.analyze_batch, args.n_clusters, args.fr_invariant_weight)
     else:
         process_single_note(Path(args.audio), output_dir, args.duration, args.max_steps,
-                            stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft)
+                            stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
+                            fr_invariant_weight_override=args.fr_invariant_weight)
 
 
 if __name__ == "__main__":

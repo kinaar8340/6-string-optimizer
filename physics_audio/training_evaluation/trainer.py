@@ -26,6 +26,7 @@ from torch.nn.utils import clip_grad_norm_
 from geoopt.optim import RiemannianAdam
 from geoopt.manifolds import Stiefel
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from . import config as training_config
 from .config import *
 from .model import StiefelDampedCoupledInharmGR
 from .utils import stiefel_dist, safe_proj, align_and_compute_freq, get_pca_initial_basis, manifold
@@ -66,7 +67,7 @@ def add_euclidean_noise(model: nn.Module, std: float):
 def _rollout_worker(arg):
     (idx, pre_state_dict_cpu, noise_std, data_points_cpu, times_cpu,
      initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
-     rollout_horizon) = arg
+     rollout_horizon, fr_invariant_weight) = arg
 
     torch.manual_seed(worker_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -107,6 +108,9 @@ def _rollout_worker(arg):
             loss = total_loss(
                 preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
                 prior_targets=prior_targets_cpu,
+                log_base_rate=model.log_base_rate,
+                log_slope=model.log_slope,
+                fr_invariant_weight_override=fr_invariant_weight,
             )
 
         scaler.scale(loss).backward()
@@ -137,6 +141,9 @@ def _rollout_worker(arg):
         final_loss = total_loss(
             preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
             prior_targets=prior_targets_cpu,
+            log_base_rate=model.log_base_rate,
+            log_slope=model.log_slope,
+            fr_invariant_weight_override=fr_invariant_weight,
         ).item()
 
     # Return CPU state_dict for safe pickling
@@ -165,12 +172,15 @@ def run_single_seed(
     prior_targets: dict | None = None,
     max_steps: int | None = None,
     stft_weight: float = 0.0,
+    fr_invariant_weight: float | None = None,
     preinitialized_model: StiefelDampedCoupledInharmGR | None = None,
     jump_test: dict | None = None,
 ):
     start_time = time.time()
     training_steps = max_steps if max_steps is not None else MAX_STEPS
     use_real_audio = real_audio_data is not None
+    if fr_invariant_weight is None:
+        fr_invariant_weight = training_config.fr_invariant_weight
 
     torch.manual_seed(DATA_SEED + seed)
     np.random.seed(DATA_SEED + seed)
@@ -339,6 +349,9 @@ def run_single_seed(
                     synth_waveform=synth_waveform,
                     target_waveform=target_waveform,
                     stft_weight=stft_weight,
+                    log_base_rate=model.log_base_rate,
+                    log_slope=model.log_slope,
+                    fr_invariant_weight_override=fr_invariant_weight,
                 )
 
             scaler.scale(loss).backward()
@@ -393,7 +406,7 @@ def run_single_seed(
                     worker_seed = random.randint(0, 2**32 - 1)
                     arg = (i, pre_state_dict_cpu, std, data_points_cpu, times_cpu,
                            initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
-                           rollout_horizon)
+                           rollout_horizon, fr_invariant_weight)
                     args.append(arg)
 
                 candidates = []
@@ -482,6 +495,9 @@ def run_single_seed(
                     current_loss = total_loss(
                         preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
                         prior_targets=prior_targets,
+                        log_base_rate=model.log_base_rate,
+                        log_slope=model.log_slope,
+                        fr_invariant_weight_override=fr_invariant_weight,
                     ).item()
 
                 save_trajectory_frame(global_step, preds.detach(), current_loss, seed,

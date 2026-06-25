@@ -14,6 +14,7 @@ from .config import (
     damping_prior_lambda, TRUE_DAMPING_RATES,
     inharm_l2_lambda, inharm_ceiling_lambda, inharm_ceiling_threshold,
     VELOCITY_SCALE_BASE, REAL_AUDIO_STFT_FFT_SIZES, REAL_AUDIO_STFT_HOP_RATIO,
+    fr_invariant_weight, fr_invariant_damping,
 )
 from .utils import stiefel_dist
 
@@ -109,10 +110,28 @@ def total_loss(
     mode_amps: torch.Tensor | None = None,
     target_mode_amps: torch.Tensor | None = None,
     fr_mode_weight: float = 0.0,
+    log_base_rate: torch.Tensor | None = None,
+    log_slope: torch.Tensor | None = None,
+    fr_invariant_weight_override: float | None = None,
+    fr_invariant_damping_override: float | None = None,
 ):
+    inv_weight = fr_invariant_weight if fr_invariant_weight_override is None else fr_invariant_weight_override
+    inv_damping = fr_invariant_damping if fr_invariant_damping_override is None else fr_invariant_damping_override
+
     loss = geo_loss(preds, data_points) + prior_loss(
         damping_rates, coupling_strength, inharm_b, speed_scalars, prior_targets=prior_targets,
     )
+
+    if inv_weight > 0.0 and log_base_rate is not None and log_slope is not None:
+        if prior_targets is not None:
+            target_damping = prior_targets["damping_rates"]
+        else:
+            target_damping = TRUE_DAMPING_RATES
+        from .invariant_losses import damping_invariant_loss
+
+        loss = loss + inv_weight * inv_damping * damping_invariant_loss(
+            log_base_rate, log_slope, target_damping,
+        )
     if stft_weight > 0.0 and synth_waveform is not None and target_waveform is not None:
         if synth_waveform.is_cuda or target_waveform.is_cuda:
             from .streaming_stft import multi_resolution_stft_loss_gpu
