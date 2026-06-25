@@ -73,6 +73,7 @@ Derivation: Nielsen & Okamura (2026) — `~/Projects/Fisher_Rao/proof.pdf`.
 python examples/rosenbrock_fr_benchmark.py
 python scripts/compare_fr_modulation.py --steps 8000
 python tests/test_fisher_rao.py
+cd physics_audio && python run_fr_smoke_test.py --steps 1200
 ```
 
 ---
