@@ -12,6 +12,7 @@ for p in (ROOT, PHYSICS_AUDIO):
         sys.path.insert(0, str(p))
 
 from training_evaluation.invariant_losses import (
+    coupling_invariant_loss,
     damping_invariant_loss,
     harmonic_design_matrix,
     learned_damping_coefficients,
@@ -44,6 +45,34 @@ def test_damping_invariant_penalizes_mismatched_envelope_scale():
     assert loss_raw.item() > 1e-6
 
 
+def _random_skew(k: int) -> torch.Tensor:
+    raw = torch.randn(k, k)
+    return raw.tril(diagonal=-1) - raw.triu(diagonal=1)
+
+
+def test_coupling_invariant_zero_on_match():
+    target = _random_skew(8)
+    strength = torch.tensor(0.3)
+    loss = coupling_invariant_loss(target, strength, target, 0.3)
+    assert loss.item() < 1e-8
+
+
+def test_coupling_invariant_rotation_invariant_shape():
+    target = _random_skew(8)
+    learned = _random_skew(8)
+    q, _ = torch.linalg.qr(torch.randn(8, 8))
+    rotated = q.T @ learned @ q
+    loss_a = coupling_invariant_loss(learned, torch.tensor(0.3), target, 0.3, strength_weight=0.0)
+    loss_b = coupling_invariant_loss(rotated, torch.tensor(0.3), target, 0.3, strength_weight=0.0)
+    assert abs(loss_a.item() - loss_b.item()) < 1e-5
+
+
+def test_coupling_invariant_penalizes_strength_mismatch():
+    skew = _random_skew(8)
+    loss = coupling_invariant_loss(skew, torch.tensor(0.5), skew, 0.3, strength_weight=1.0)
+    assert loss.item() > 1e-6
+
+
 def test_harmonic_design_matrix_shape():
     design = harmonic_design_matrix(8, device=torch.device("cpu"))
     assert design.shape == (8, 2)
@@ -54,5 +83,8 @@ def test_harmonic_design_matrix_shape():
 if __name__ == "__main__":
     test_damping_invariant_zero_when_coefficients_match()
     test_damping_invariant_penalizes_mismatched_envelope_scale()
+    test_coupling_invariant_zero_on_match()
+    test_coupling_invariant_rotation_invariant_shape()
+    test_coupling_invariant_penalizes_strength_mismatch()
     test_harmonic_design_matrix_shape()
     print("physics_audio invariant tests passed.")

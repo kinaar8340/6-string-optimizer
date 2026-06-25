@@ -15,7 +15,7 @@ for candidate in (_ROOT, _FISHER_RAO_HOME):
         sys.path.insert(0, str(candidate))
 
 try:
-    from fisher_rao.invariants import location_scale_pair_invariant
+    from fisher_rao.invariants import location_scale_pair_invariant, rotation_singular_invariants
 except ImportError:
 
     def location_scale_pair_invariant(mu1, V1, mu2, V2):
@@ -34,6 +34,9 @@ except ImportError:
             ["singular_values", "multiplicities", "block_norms", "relative_scale", "whitened_location"],
         )
         return Inv(singular_values, [singular_values.numel()], block_norms, S, nu)
+
+    def rotation_singular_invariants(matrix: torch.Tensor) -> torch.Tensor:
+        return torch.linalg.svdvals(matrix.float())
 
 
 def harmonic_design_matrix(
@@ -96,3 +99,45 @@ def damping_invariant_loss(
     if singular_weight > 0.0:
         loss = loss + singular_weight * (inv.singular_values - 1.0).pow(2).sum()
     return loss
+
+
+def _skew_matrix(raw: torch.Tensor) -> torch.Tensor:
+    """Build skew-symmetric matrix from unconstrained raw parameters."""
+    return raw.tril(diagonal=-1) - raw.triu(diagonal=1)
+
+
+def coupling_invariant_loss(
+    coupling_skew: torch.Tensor,
+    coupling_strength: torch.Tensor,
+    target_coupling_skew: torch.Tensor | None = None,
+    target_coupling_strength: float | torch.Tensor | None = None,
+    strength_weight: float = 0.1,
+) -> torch.Tensor:
+    """
+    O(k) rotation-invariant loss on coupling topology (Thm 2.3 / skew spectrum).
+
+    Compares singular values of the learned skew coupling matrix to a reference
+    (zero = decoupled, or estimated / synthetic ground truth).  Coupling strength
+    is compared separately in log-space (positive scale quotient).
+    """
+    learned = coupling_skew.float()
+    if target_coupling_skew is None:
+        target = torch.zeros_like(learned)
+    else:
+        target = target_coupling_skew.float()
+
+    sv_learned = rotation_singular_invariants(learned)
+    sv_target = rotation_singular_invariants(target)
+    shape_loss = (sv_learned - sv_target).pow(2).sum()
+
+    if target_coupling_strength is None:
+        target_s = torch.tensor(1.0, device=learned.device, dtype=learned.dtype)
+    elif torch.is_tensor(target_coupling_strength):
+        target_s = target_coupling_strength.float().reshape(())
+    else:
+        target_s = torch.tensor(float(target_coupling_strength), device=learned.device, dtype=learned.dtype)
+
+    strength = coupling_strength.float().reshape(())
+    scale_loss = torch.log(strength / target_s.clamp(min=1e-8)).pow(2)
+
+    return shape_loss + strength_weight * scale_loss

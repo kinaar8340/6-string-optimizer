@@ -31,11 +31,30 @@ from .config import *
 from .model import StiefelDampedCoupledInharmGR
 from .utils import stiefel_dist, safe_proj, align_and_compute_freq, get_pca_initial_basis, manifold
 from .losses import total_loss
+from .fr_utils import mode_amplitudes_from_stiefel, modal_spectral_envelope, fr_loss_kwargs_from_batch
 from .audio_utils import modal_synthesis_torch, extract_coupling_skew
 from .viz import save_trajectory_frame, save_detailed_pyramid_plot, plot_smith_chart
 
 # Force spawn for CUDA safety
 mp.set_start_method('spawn', force=True)
+
+
+def _invariant_loss_kwargs(
+    model: nn.Module,
+    reference_coupling_skew: torch.Tensor | None,
+    fr_invariant_weight: float,
+    fr_invariant_coupling: float | None = None,
+) -> dict:
+    kw = {
+        "log_base_rate": model.log_base_rate,
+        "log_slope": model.log_slope,
+        "coupling_skew": extract_coupling_skew(model),
+        "target_coupling_skew": reference_coupling_skew,
+        "fr_invariant_weight_override": fr_invariant_weight,
+    }
+    if fr_invariant_coupling is not None:
+        kw["fr_invariant_coupling_override"] = fr_invariant_coupling
+    return kw
 
 
 def loss_to_gamma(loss: float) -> float:
@@ -67,7 +86,8 @@ def add_euclidean_noise(model: nn.Module, std: float):
 def _rollout_worker(arg):
     (idx, pre_state_dict_cpu, noise_std, data_points_cpu, times_cpu,
      initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
-     rollout_horizon, fr_invariant_weight) = arg
+     rollout_horizon, fr_invariant_weight, fr_invariant_coupling, fr_mode_weight, fr_spectral_weight,
+     target_mode_amps_cpu, target_spectrum_cpu, reference_coupling_skew_cpu) = arg
 
     torch.manual_seed(worker_seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,6 +112,11 @@ def _rollout_worker(arg):
 
     data_points = data_points_cpu.to(device)
     times = times_cpu.to(device)
+    target_mode_amps = target_mode_amps_cpu.to(device) if target_mode_amps_cpu is not None else None
+    target_spectrum = target_spectrum_cpu.to(device) if target_spectrum_cpu is not None else None
+    reference_coupling_skew = (
+        reference_coupling_skew_cpu.to(device) if reference_coupling_skew_cpu is not None else None
+    )
 
     best_local_loss = float('inf')
     best_state = None
@@ -105,12 +130,18 @@ def _rollout_worker(arg):
 
         with autocast('cuda', enabled=USE_AMP):
             preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
+            fr_kw = fr_loss_kwargs_from_batch(
+                preds, data_points,
+                fr_mode_weight=fr_mode_weight,
+                fr_spectral_weight=fr_spectral_weight,
+                target_mode_amps=target_mode_amps,
+                target_spectrum=target_spectrum,
+            )
             loss = total_loss(
                 preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
                 prior_targets=prior_targets_cpu,
-                log_base_rate=model.log_base_rate,
-                log_slope=model.log_slope,
-                fr_invariant_weight_override=fr_invariant_weight,
+                **_invariant_loss_kwargs(model, reference_coupling_skew, fr_invariant_weight, fr_invariant_coupling),
+                **fr_kw,
             )
 
         scaler.scale(loss).backward()
@@ -138,12 +169,18 @@ def _rollout_worker(arg):
 
     with torch.no_grad():
         preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
+        fr_kw = fr_loss_kwargs_from_batch(
+            preds, data_points,
+            fr_mode_weight=fr_mode_weight,
+            fr_spectral_weight=fr_spectral_weight,
+            target_mode_amps=target_mode_amps,
+            target_spectrum=target_spectrum,
+        )
         final_loss = total_loss(
             preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
             prior_targets=prior_targets_cpu,
-            log_base_rate=model.log_base_rate,
-            log_slope=model.log_slope,
-            fr_invariant_weight_override=fr_invariant_weight,
+            **_invariant_loss_kwargs(model, reference_coupling_skew, fr_invariant_weight, fr_invariant_coupling),
+            **fr_kw,
         ).item()
 
     # Return CPU state_dict for safe pickling
@@ -173,6 +210,9 @@ def run_single_seed(
     max_steps: int | None = None,
     stft_weight: float = 0.0,
     fr_invariant_weight: float | None = None,
+    fr_invariant_coupling: float | None = None,
+    fr_mode_weight: float | None = None,
+    fr_spectral_weight: float | None = None,
     preinitialized_model: StiefelDampedCoupledInharmGR | None = None,
     jump_test: dict | None = None,
 ):
@@ -181,6 +221,12 @@ def run_single_seed(
     use_real_audio = real_audio_data is not None
     if fr_invariant_weight is None:
         fr_invariant_weight = training_config.fr_invariant_weight
+    if fr_invariant_coupling is None:
+        fr_invariant_coupling = training_config.fr_invariant_coupling
+    if fr_mode_weight is None:
+        fr_mode_weight = training_config.fr_mode_weight
+    if fr_spectral_weight is None:
+        fr_spectral_weight = training_config.fr_spectral_weight
 
     torch.manual_seed(DATA_SEED + seed)
     np.random.seed(DATA_SEED + seed)
@@ -194,6 +240,7 @@ def run_single_seed(
         true_base = None
         true_vel_dir = None
         true_freq = None
+        true_coupling_skew = None
     else:
         # === True physics generation ===
         raw = torch.randn(DIM, K_MODES, device=device)
@@ -222,6 +269,15 @@ def run_single_seed(
         data_points = exact_points + noise_amp * torch.randn_like(exact_points)
         times = TIMES
         initial_basis = get_pca_initial_basis(data_points, K_MODES)
+
+    reference_coupling_skew = None
+    if not use_real_audio and true_coupling_skew is not None:
+        reference_coupling_skew = true_coupling_skew.detach()
+    elif prior_targets is not None:
+        reference_coupling_skew = prior_targets.get("coupling_skew")
+
+    target_mode_amps = mode_amplitudes_from_stiefel(data_points)
+    target_spectrum = modal_spectral_envelope(data_points)
 
     # === Visualization setup ===
     _, _, proj_matrix = torch.pca_lowrank(data_points.reshape(-1, DIM), q=3, center=True, niter=6)
@@ -343,15 +399,21 @@ def run_single_seed(
                         coupling_strength=coupling_strength,
                         coupling_skew=coupling_skew,
                     )
+                fr_kw = fr_loss_kwargs_from_batch(
+                    preds, data_points,
+                    fr_mode_weight=fr_mode_weight,
+                    fr_spectral_weight=fr_spectral_weight,
+                    target_mode_amps=target_mode_amps,
+                    target_spectrum=target_spectrum,
+                )
                 loss = total_loss(
                     preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
                     prior_targets=prior_targets,
                     synth_waveform=synth_waveform,
                     target_waveform=target_waveform,
                     stft_weight=stft_weight,
-                    log_base_rate=model.log_base_rate,
-                    log_slope=model.log_slope,
-                    fr_invariant_weight_override=fr_invariant_weight,
+                    **_invariant_loss_kwargs(model, reference_coupling_skew, fr_invariant_weight, fr_invariant_coupling),
+                    **fr_kw,
                 )
 
             scaler.scale(loss).backward()
@@ -404,9 +466,14 @@ def run_single_seed(
                 for i in range(pop_size):
                     std = 0.0 if INCLUDE_ZERO_JUMP and i == 0 else random.uniform(jump_std_min, current_jump_std)
                     worker_seed = random.randint(0, 2**32 - 1)
+                    ref_skew_cpu = (
+                        reference_coupling_skew.cpu() if reference_coupling_skew is not None else None
+                    )
                     arg = (i, pre_state_dict_cpu, std, data_points_cpu, times_cpu,
                            initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
-                           rollout_horizon, fr_invariant_weight)
+                           rollout_horizon, fr_invariant_weight, fr_invariant_coupling,
+                           fr_mode_weight, fr_spectral_weight,
+                           target_mode_amps.cpu(), target_spectrum.cpu(), ref_skew_cpu)
                     args.append(arg)
 
                 candidates = []
@@ -492,12 +559,18 @@ def run_single_seed(
                 # Robust post-jump visualization
                 with torch.no_grad():
                     preds, damping_rates, coupling_strength, inharm_b, speed_scalars, full_freq = model(times)
+                    fr_kw = fr_loss_kwargs_from_batch(
+                        preds, data_points,
+                        fr_mode_weight=fr_mode_weight,
+                        fr_spectral_weight=fr_spectral_weight,
+                        target_mode_amps=target_mode_amps,
+                        target_spectrum=target_spectrum,
+                    )
                     current_loss = total_loss(
                         preds, data_points, damping_rates, coupling_strength, inharm_b, speed_scalars,
                         prior_targets=prior_targets,
-                        log_base_rate=model.log_base_rate,
-                        log_slope=model.log_slope,
-                        fr_invariant_weight_override=fr_invariant_weight,
+                        **_invariant_loss_kwargs(model, reference_coupling_skew, fr_invariant_weight, fr_invariant_coupling),
+                        **fr_kw,
                     ).item()
 
                 save_trajectory_frame(global_step, preds.detach(), current_loss, seed,
