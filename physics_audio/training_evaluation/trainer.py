@@ -52,6 +52,7 @@ def _invariant_loss_kwargs(
     fr_invariant_speed: float | None = None,
     fr_invariant_inharm: float | None = None,
     fr_invariant_modal: float | None = None,
+    fr_replace_mse_priors: bool | None = None,
     reference_speed_scalars: torch.Tensor | None = None,
     reference_inharm_b: torch.Tensor | None = None,
 ) -> dict:
@@ -72,6 +73,8 @@ def _invariant_loss_kwargs(
         kw["fr_invariant_inharm_override"] = fr_invariant_inharm
     if fr_invariant_modal is not None:
         kw["fr_invariant_modal_override"] = fr_invariant_modal
+    if fr_replace_mse_priors is not None:
+        kw["fr_replace_mse_priors_override"] = fr_replace_mse_priors
     return kw
 
 
@@ -105,7 +108,7 @@ def _rollout_worker(arg):
     (idx, pre_state_dict_cpu, noise_std, data_points_cpu, times_cpu,
      initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
      rollout_horizon, fr_invariant_weight, fr_invariant_coupling, fr_invariant_speed,
-     fr_invariant_inharm, fr_invariant_modal, fr_mode_weight, fr_spectral_weight,
+     fr_invariant_inharm, fr_invariant_modal, fr_replace_mse_priors, fr_mode_weight, fr_spectral_weight,
      target_mode_amps_cpu, target_spectrum_cpu, reference_coupling_skew_cpu,
      reference_speed_scalars_cpu, reference_inharm_b_cpu) = arg
 
@@ -171,6 +174,7 @@ def _rollout_worker(arg):
                 **_invariant_loss_kwargs(
                     model, reference_coupling_skew, fr_invariant_weight,
                     fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal,
+                    fr_replace_mse_priors,
                     reference_speed_scalars, reference_inharm_b,
                 ),
                 **fr_kw,
@@ -216,6 +220,7 @@ def _rollout_worker(arg):
             **_invariant_loss_kwargs(
                 model, reference_coupling_skew, fr_invariant_weight,
                 fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal,
+                fr_replace_mse_priors,
                 reference_speed_scalars, reference_inharm_b,
             ),
             **fr_kw,
@@ -252,6 +257,7 @@ def run_single_seed(
     fr_invariant_speed: float | None = None,
     fr_invariant_inharm: float | None = None,
     fr_invariant_modal: float | None = None,
+    fr_replace_mse_priors: bool | None = None,
     fr_mode_weight: float | None = None,
     fr_spectral_weight: float | None = None,
     preinitialized_model: StiefelDampedCoupledInharmGR | None = None,
@@ -270,6 +276,8 @@ def run_single_seed(
         fr_invariant_inharm = training_config.fr_invariant_inharm
     if fr_invariant_modal is None:
         fr_invariant_modal = training_config.fr_invariant_modal
+    if fr_replace_mse_priors is None:
+        fr_replace_mse_priors = training_config.fr_replace_mse_priors
     if fr_mode_weight is None:
         fr_mode_weight = training_config.fr_mode_weight
     if fr_spectral_weight is None:
@@ -470,6 +478,7 @@ def run_single_seed(
                     **_invariant_loss_kwargs(
                         model, reference_coupling_skew, fr_invariant_weight,
                         fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal,
+                        fr_replace_mse_priors,
                         reference_speed_scalars, reference_inharm_b,
                     ),
                     **fr_kw,
@@ -538,6 +547,7 @@ def run_single_seed(
                            initial_basis_cpu, worker_seed, lr_geo, lr_slow, prior_targets_cpu,
                            rollout_horizon, fr_invariant_weight, fr_invariant_coupling,
                            fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal,
+                           fr_replace_mse_priors,
                            fr_mode_weight, fr_spectral_weight,
                            target_mode_amps.cpu(), target_spectrum.cpu(), ref_skew_cpu,
                            ref_speed_cpu, ref_inharm_cpu)
@@ -641,6 +651,7 @@ def run_single_seed(
                         **_invariant_loss_kwargs(
                             model, reference_coupling_skew, fr_invariant_weight,
                             fr_invariant_coupling, fr_invariant_speed, fr_invariant_inharm, fr_invariant_modal,
+                            fr_replace_mse_priors,
                             reference_speed_scalars, reference_inharm_b,
                         ),
                         **fr_kw,

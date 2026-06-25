@@ -22,6 +22,13 @@ from training_evaluation.invariant_losses import (
     inharm_profile_invariant_loss,
 )
 from training_evaluation.fr_utils import resolve_target_mode_amps
+from training_evaluation.losses import prior_loss, _mse_prior_skip_terms
+from training_evaluation.config import (
+    fr_invariant_damping,
+    fr_invariant_coupling,
+    fr_invariant_speed,
+    fr_invariant_inharm,
+)
 
 
 def test_damping_invariant_zero_when_coefficients_match():
@@ -114,6 +121,56 @@ def test_resolve_target_mode_amps_prefers_piptrack():
     assert torch.allclose(resolved, pip)
 
 
+def test_mse_prior_skip_terms_when_phase4_active():
+    log_base = torch.log(torch.tensor(0.05))
+    log_slope = torch.log(torch.tensor(0.02))
+    skew = _random_skew(8)
+    skip = _mse_prior_skip_terms(
+        0.3,
+        True,
+        inv_damping=fr_invariant_damping,
+        inv_coupling=fr_invariant_coupling,
+        inv_speed=fr_invariant_speed,
+        inv_inharm=fr_invariant_inharm,
+        log_base_rate=log_base,
+        log_slope=log_slope,
+        coupling_skew=skew,
+    )
+    assert skip == frozenset({"damping", "coupling", "speed", "inharm"})
+
+
+def test_mse_prior_skip_empty_when_augment_mode():
+    skip = _mse_prior_skip_terms(
+        0.3,
+        False,
+        inv_damping=1.0,
+        inv_coupling=0.5,
+        inv_speed=0.25,
+        inv_inharm=0.25,
+        log_base_rate=torch.log(torch.tensor(0.05)),
+        log_slope=torch.log(torch.tensor(0.02)),
+        coupling_skew=_random_skew(8),
+    )
+    assert skip == frozenset()
+
+
+def test_prior_loss_skips_damping_mse_when_requested():
+    damping = torch.linspace(0.05, 0.5, 8)
+    target = torch.zeros(8)
+    coupling = torch.tensor(0.3)
+    inharm = torch.zeros(8)
+    speed = torch.ones(8) * 2.0
+
+    full = prior_loss(damping, coupling, inharm, speed, prior_targets={"damping_rates": target})
+    skipped = prior_loss(
+        damping, coupling, inharm, speed,
+        prior_targets={"damping_rates": target},
+        skip_mse_terms=frozenset({"damping"}),
+    )
+    assert full.item() > skipped.item()
+    assert (full - skipped).item() > 0.0
+
+
 def test_harmonic_design_matrix_shape():
     design = harmonic_design_matrix(8, device=torch.device("cpu"))
     assert design.shape == (8, 2)
@@ -132,5 +189,8 @@ if __name__ == "__main__":
     test_modal_amp_pair_invariant_zero_on_match()
     test_modal_amp_pair_invariant_uses_temporal_obs()
     test_resolve_target_mode_amps_prefers_piptrack()
+    test_mse_prior_skip_terms_when_phase4_active()
+    test_mse_prior_skip_empty_when_augment_mode()
+    test_prior_loss_skips_damping_mse_when_requested()
     test_harmonic_design_matrix_shape()
     print("physics_audio invariant tests passed.")

@@ -17,6 +17,7 @@ from .config import (
     fr_invariant_weight, fr_invariant_damping, fr_invariant_coupling,
     fr_invariant_coupling_strength_weight, fr_invariant_speed, fr_invariant_inharm,
     fr_invariant_modal,
+    fr_replace_mse_priors,
     TRUE_INHARM_B,
 )
 from .utils import stiefel_dist
@@ -29,14 +30,44 @@ def geo_loss(preds, data_points):
         return stiefel_dist(preds.float(), data_points.float()).pow(2).mean()
 
 
+def _mse_prior_skip_terms(
+    inv_weight: float,
+    replace_mse: bool,
+    *,
+    inv_damping: float,
+    inv_coupling: float,
+    inv_speed: float,
+    inv_inharm: float,
+    log_base_rate: torch.Tensor | None,
+    log_slope: torch.Tensor | None,
+    coupling_skew: torch.Tensor | None,
+) -> frozenset[str]:
+    """Terms in prior_loss superseded by active Fisher-Rao invariants (Phase 4)."""
+    if inv_weight <= 0.0 or not replace_mse:
+        return frozenset()
+    skip: set[str] = set()
+    if inv_damping > 0.0 and log_base_rate is not None and log_slope is not None:
+        skip.add("damping")
+    if inv_coupling > 0.0 and coupling_skew is not None:
+        skip.add("coupling")
+    if inv_speed > 0.0:
+        skip.add("speed")
+    if inv_inharm > 0.0:
+        skip.add("inharm")
+    return frozenset(skip)
+
+
 def prior_loss(
     damping_rates,
     coupling_strength,
     inharm_b,
     speed_scalars,
     prior_targets: dict | None = None,
+    skip_mse_terms: frozenset[str] | None = None,
 ):
     """Physics priors. When prior_targets is set, use estimated real-audio values."""
+    skip = skip_mse_terms or frozenset()
+    zero = damping_rates.new_tensor(0.0)
     if prior_targets is not None:
         target_damping = prior_targets['damping_rates']
         target_coupling = prior_targets.get('coupling_strength', TRUE_COUPLING_STRENGTH)
@@ -49,11 +80,22 @@ def prior_loss(
         target_inharm = None
 
     speed_uniform_loss = speed_uniform_lambda * (speed_scalars.std() / (speed_scalars.mean() + 1e-8))
-    speed_mean_prior = speed_mean_prior_lambda * (speed_scalars.mean() - target_speed_mean).pow(2)
-    coupling_prior_loss = coupling_prior_lambda * (coupling_strength - target_coupling).pow(2)
-    damping_prior_loss = damping_prior_lambda * F.mse_loss(damping_rates, target_damping)
+    if "speed" in skip:
+        speed_mean_prior = zero
+    else:
+        speed_mean_prior = speed_mean_prior_lambda * (speed_scalars.mean() - target_speed_mean).pow(2)
+    if "coupling" in skip:
+        coupling_prior_loss = zero
+    else:
+        coupling_prior_loss = coupling_prior_lambda * (coupling_strength - target_coupling).pow(2)
+    if "damping" in skip:
+        damping_prior_loss = zero
+    else:
+        damping_prior_loss = damping_prior_lambda * F.mse_loss(damping_rates, target_damping)
 
-    if target_inharm is not None:
+    if "inharm" in skip:
+        inharm_l2_loss = zero
+    elif target_inharm is not None:
         inharm_l2_loss = inharm_l2_lambda * F.mse_loss(inharm_b, target_inharm)
     else:
         inharm_l2_loss = inharm_l2_lambda * inharm_b.pow(2).mean()
@@ -123,6 +165,7 @@ def total_loss(
     fr_invariant_speed_override: float | None = None,
     fr_invariant_inharm_override: float | None = None,
     fr_invariant_modal_override: float | None = None,
+    fr_replace_mse_priors_override: bool | None = None,
     target_speed_scalars: torch.Tensor | None = None,
     target_inharm_b: torch.Tensor | None = None,
 ):
@@ -132,9 +175,26 @@ def total_loss(
     inv_speed = fr_invariant_speed if fr_invariant_speed_override is None else fr_invariant_speed_override
     inv_inharm = fr_invariant_inharm if fr_invariant_inharm_override is None else fr_invariant_inharm_override
     inv_modal = fr_invariant_modal if fr_invariant_modal_override is None else fr_invariant_modal_override
+    replace_mse = (
+        fr_replace_mse_priors if fr_replace_mse_priors_override is None else fr_replace_mse_priors_override
+    )
+
+    skip_mse = _mse_prior_skip_terms(
+        inv_weight,
+        replace_mse,
+        inv_damping=inv_damping,
+        inv_coupling=inv_coupling,
+        inv_speed=inv_speed,
+        inv_inharm=inv_inharm,
+        log_base_rate=log_base_rate,
+        log_slope=log_slope,
+        coupling_skew=coupling_skew,
+    )
 
     loss = geo_loss(preds, data_points) + prior_loss(
-        damping_rates, coupling_strength, inharm_b, speed_scalars, prior_targets=prior_targets,
+        damping_rates, coupling_strength, inharm_b, speed_scalars,
+        prior_targets=prior_targets,
+        skip_mse_terms=skip_mse,
     )
 
     if inv_weight > 0.0:

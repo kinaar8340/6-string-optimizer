@@ -31,6 +31,7 @@ from training_evaluation.config import (
     fr_invariant_weight,
     fr_invariant_coupling,
     fr_invariant_modal,
+    fr_replace_mse_priors,
     REAL_AUDIO_FR_MODE_WEIGHT,
 )
 from training_evaluation.model import StiefelDampedCoupledInharmGR
@@ -140,6 +141,7 @@ def process_single_note(
     fr_invariant_coupling_override: float | None = None,
     fr_invariant_modal_override: float | None = None,
     fr_mode_weight_override: float | None = None,
+    fr_augment_priors: bool = False,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
     note_name = audio_path.stem
@@ -183,6 +185,12 @@ def process_single_note(
     active_fr_coup = (
         fr_invariant_coupling if fr_invariant_coupling_override is None else fr_invariant_coupling_override
     )
+    active_fr_speed = (
+        fr_invariant_speed if fr_invariant_speed_override is None else fr_invariant_speed_override
+    )
+    active_fr_inharm = (
+        fr_invariant_inharm if fr_invariant_inharm_override is None else fr_invariant_inharm_override
+    )
     active_fr_modal = (
         fr_invariant_modal if fr_invariant_modal_override is None else fr_invariant_modal_override
     )
@@ -193,6 +201,7 @@ def process_single_note(
     print(
         f"Running optimization ({max_steps} steps, STFT={stft_weight}, "
         f"fr_invariant={active_fr_inv}, fr_coupling={active_fr_coup}, "
+        f"fr_speed={active_fr_speed}, fr_inharm={active_fr_inharm}, "
         f"fr_modal={active_fr_modal}, fr_mode={active_fr_mode}{jump_label})..."
     )
     result = run_single_seed(
@@ -207,8 +216,11 @@ def process_single_note(
         stft_weight=stft_weight,
         fr_invariant_weight=active_fr_inv,
         fr_invariant_coupling=active_fr_coup,
+        fr_invariant_speed=active_fr_speed,
+        fr_invariant_inharm=active_fr_inharm,
         fr_invariant_modal=active_fr_modal,
         fr_mode_weight=active_fr_mode,
+        fr_replace_mse_priors=not fr_augment_priors,
         preinitialized_model=model,
         jump_test=jump_test,
     )
@@ -245,7 +257,8 @@ def process_single_note(
 def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, streaming,
               jump_test, use_gpu_stft, analyze_batch, n_clusters,
               fr_invariant_weight_override=None, fr_invariant_coupling_override=None,
-              fr_invariant_modal_override=None, fr_mode_weight_override=None):
+              fr_invariant_modal_override=None, fr_mode_weight_override=None,
+              fr_augment_priors: bool = False):
     files = discover_audio_files(audio_dir)
     if not files:
         raise FileNotFoundError(f"No audio files in {audio_dir}")
@@ -259,6 +272,7 @@ def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, str
             fr_invariant_coupling_override=fr_invariant_coupling_override,
             fr_invariant_modal_override=fr_invariant_modal_override,
             fr_mode_weight_override=fr_mode_weight_override,
+            fr_augment_priors=fr_augment_priors,
         ))
     csv_path = output_dir / "batch_summary.csv"
     fields = ['name', 'file', 'duration_s', 'f0_est_hz', 'b_est', 'recon_mse',
@@ -386,6 +400,18 @@ def main():
         help=f"Coupling skew singular-value invariant weight (default config: {fr_invariant_coupling})",
     )
     parser.add_argument(
+        "--fr_invariant_speed",
+        type=float,
+        default=None,
+        help=f"Speed profile Fisher-Rao invariant weight (default config: {fr_invariant_speed})",
+    )
+    parser.add_argument(
+        "--fr_invariant_inharm",
+        type=float,
+        default=None,
+        help=f"Inharmonicity profile Fisher-Rao invariant weight (default config: {fr_invariant_inharm})",
+    )
+    parser.add_argument(
         "--fr_invariant_modal",
         type=float,
         default=None,
@@ -396,6 +422,11 @@ def main():
         type=float,
         default=None,
         help=f"Simplex Fisher-Rao modal loss weight (default real-audio: {REAL_AUDIO_FR_MODE_WEIGHT})",
+    )
+    parser.add_argument(
+        "--fr_augment_priors",
+        action="store_true",
+        help="Keep MSE prior terms alongside invariants (disable Phase 4 replacement)",
     )
     parser.add_argument("--no_stft", action="store_true")
     parser.add_argument("--streaming", action="store_true")
@@ -445,14 +476,16 @@ def main():
         run_batch(Path(args.audio_dir), output_dir, args.duration, args.max_steps,
                   stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                   args.analyze_batch, args.n_clusters, args.fr_invariant_weight,
-                  args.fr_invariant_coupling, args.fr_invariant_modal, args.fr_mode_weight)
+                  args.fr_invariant_coupling, args.fr_invariant_modal, args.fr_mode_weight,
+                  args.fr_augment_priors)
     else:
         process_single_note(Path(args.audio), output_dir, args.duration, args.max_steps,
                             stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                             fr_invariant_weight_override=args.fr_invariant_weight,
                             fr_invariant_coupling_override=args.fr_invariant_coupling,
                             fr_invariant_modal_override=args.fr_invariant_modal,
-                            fr_mode_weight_override=args.fr_mode_weight)
+                            fr_mode_weight_override=args.fr_mode_weight,
+                            fr_augment_priors=args.fr_augment_priors)
 
 
 if __name__ == "__main__":

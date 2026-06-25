@@ -120,6 +120,8 @@ fr_invariant_modal = 0.4
 fr_mode_weight = 0.0
 fr_spectral_weight = 0.0
 REAL_AUDIO_FR_MODE_WEIGHT = 0.2
+# Phase 4: drop redundant MSE prior terms when matching invariant is active
+fr_replace_mse_priors = True
 
 # === Real-audio extension ===
 REAL_AUDIO_MAX_STEPS = 20000
