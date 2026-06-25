@@ -76,6 +76,8 @@ python tests/test_fisher_rao.py
 cd physics_audio && python run_fr_smoke_test.py --steps 1200
 ```
 
+**Phase 2:** coupling skew singular-value invariant + speed/inharm FR profile losses — see `fisher_rao/PHASE2.md`.
+
 ---
 
 ## Key Features

@@ -323,11 +323,13 @@ def build_prior_targets(
     """Build prior target dict for real-audio loss (replaces synthetic TRUE_* constants)."""
     harmonics = torch.arange(1, K_MODES + 1, device=device, dtype=torch.float32)
     inharm_b = torch.full((K_MODES,), b_est, device=device) * harmonics
+    speed_mean = f0_est / VELOCITY_SCALE_BASE
     targets = {
         'damping_rates': torch.tensor(damping_rates, device=device, dtype=torch.float32),
         'coupling_strength': coupling_strength,
         'inharm_b': inharm_b,
-        'speed_mean': f0_est / VELOCITY_SCALE_BASE,
+        'speed_mean': speed_mean,
+        'speed_scalars': torch.ones(K_MODES, device=device, dtype=torch.float32) * speed_mean,
     }
     if partial_amps is not None:
         targets['partial_amps_mean'] = partial_amps_mean_tensor(partial_amps)

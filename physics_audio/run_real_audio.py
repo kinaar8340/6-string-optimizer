@@ -30,6 +30,8 @@ from training_evaluation.config import (
     LIVE_MIC_BLOCKSIZE, LIVE_MIC_DEFAULT_SECONDS, GPU_STFT_N_FFT, GPU_STFT_HOP,
     fr_invariant_weight,
     fr_invariant_coupling,
+    fr_invariant_speed,
+    fr_invariant_inharm,
     fr_invariant_modal,
     fr_replace_mse_priors,
     REAL_AUDIO_FR_MODE_WEIGHT,
@@ -139,6 +141,8 @@ def process_single_note(
     use_gpu_stft: bool = False,
     fr_invariant_weight_override: float | None = None,
     fr_invariant_coupling_override: float | None = None,
+    fr_invariant_speed_override: float | None = None,
+    fr_invariant_inharm_override: float | None = None,
     fr_invariant_modal_override: float | None = None,
     fr_mode_weight_override: float | None = None,
     fr_augment_priors: bool = False,
@@ -257,6 +261,7 @@ def process_single_note(
 def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, streaming,
               jump_test, use_gpu_stft, analyze_batch, n_clusters,
               fr_invariant_weight_override=None, fr_invariant_coupling_override=None,
+              fr_invariant_speed_override=None, fr_invariant_inharm_override=None,
               fr_invariant_modal_override=None, fr_mode_weight_override=None,
               fr_augment_priors: bool = False):
     files = discover_audio_files(audio_dir)
@@ -270,6 +275,8 @@ def run_batch(audio_dir, output_dir, duration, max_steps, stft_weight, seed, str
             seed=seed + i, streaming=streaming, jump_test=jump_test, use_gpu_stft=use_gpu_stft,
             fr_invariant_weight_override=fr_invariant_weight_override,
             fr_invariant_coupling_override=fr_invariant_coupling_override,
+            fr_invariant_speed_override=fr_invariant_speed_override,
+            fr_invariant_inharm_override=fr_invariant_inharm_override,
             fr_invariant_modal_override=fr_invariant_modal_override,
             fr_mode_weight_override=fr_mode_weight_override,
             fr_augment_priors=fr_augment_priors,
@@ -476,13 +483,15 @@ def main():
         run_batch(Path(args.audio_dir), output_dir, args.duration, args.max_steps,
                   stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                   args.analyze_batch, args.n_clusters, args.fr_invariant_weight,
-                  args.fr_invariant_coupling, args.fr_invariant_modal, args.fr_mode_weight,
-                  args.fr_augment_priors)
+                  args.fr_invariant_coupling, args.fr_invariant_speed, args.fr_invariant_inharm,
+                  args.fr_invariant_modal, args.fr_mode_weight, args.fr_augment_priors)
     else:
         process_single_note(Path(args.audio), output_dir, args.duration, args.max_steps,
                             stft_weight, args.seed, args.streaming, jump_test, args.gpu_stft,
                             fr_invariant_weight_override=args.fr_invariant_weight,
                             fr_invariant_coupling_override=args.fr_invariant_coupling,
+                            fr_invariant_speed_override=args.fr_invariant_speed,
+                            fr_invariant_inharm_override=args.fr_invariant_inharm,
                             fr_invariant_modal_override=args.fr_invariant_modal,
                             fr_mode_weight_override=args.fr_mode_weight,
                             fr_augment_priors=args.fr_augment_priors)
